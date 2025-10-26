@@ -35,6 +35,19 @@ from langchain_neo4j import Neo4jGraph
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from dotenv import load_dotenv
+
+# agent chat
+from src.agent.router_agent import router as agent_router
+
+# psql 
+from src.db_psql.postgres import check_database_health
+
+# custom error psql
+from src.shared.errors import app_error_handler, generic_error_handler, AppError
+
+# router domain 
+from src.api.routers.domains import router as domains_router
+
 load_dotenv(override=True)
 
 logger = CustomLogger()
@@ -103,7 +116,20 @@ class CustomGZipMiddleware:
 app = FastAPI()
 app.add_middleware(XContentTypeOptions)
 app.add_middleware(XFrame, Option={'X-Frame-Options': 'DENY'})
-app.add_middleware(CustomGZipMiddleware, minimum_size=1000, compresslevel=5,paths=["/sources_list","/url/scan","/extract","/chat_bot","/chunk_entities","/get_neighbours","/graph_query","/schema","/populate_graph_schema","/get_unconnected_nodes_list","/get_duplicate_nodes","/fetch_chunktext","/schema_visualization"])
+app.add_middleware(CustomGZipMiddleware, minimum_size=1000, compresslevel=5,paths=["/sources_list"
+,"/url/scan"
+,"/extract"
+,"/chat_bot"
+,"/chunk_entities"
+,"/get_neighbours"
+,"/graph_query"
+,"/schema"
+,"/populate_graph_schema"
+,"/get_unconnected_nodes_list"
+,"/get_duplicate_nodes"
+,"/fetch_chunktext"
+,"/schema_visualization"
+,"/agent_chat"])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -118,7 +144,14 @@ if is_gemini_enabled:
 
 app.add_api_route("/health", health([healthy_condition, healthy]))
 
+app.include_router(agent_router)
 
+# register custom error 
+app.add_exception_handler(AppError, app_error_handler)
+app.add_exception_handler(Exception, generic_error_handler)
+
+# register router domain 
+app.include_router(domains_router)
 
 @app.post("/url/scan")
 async def create_source_knowledge_graph_url(
@@ -1091,6 +1124,10 @@ async def get_schema_visualization(uri=Form(None), userName=Form(None), password
         return create_api_response("Failed", message=message, error=error_message)
     finally:
         gc.collect()
+
+@app.get("/health/psql")
+def psql_health_check():
+    return check_database_health()
 
 if __name__ == "__main__":
     uvicorn.run(app)

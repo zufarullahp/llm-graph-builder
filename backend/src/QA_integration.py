@@ -35,7 +35,7 @@ from langchain_community.chat_models import ChatOllama
 from src.llm import get_llm
 from src.shared.common_fn import load_embedding_model
 from src.shared.constants import *
-load_dotenv() 
+
 
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 EMBEDDING_FUNCTION , _ = load_embedding_model(EMBEDDING_MODEL) 
@@ -582,7 +582,7 @@ def process_graph_response(model, graph, question, messages, history):
         ai_response = AIMessage(content=ai_response_content)
         
         messages.append(ai_response)
-        # summarize_and_log(history, messages, qa_llm)
+        summarize_and_log(history, messages, qa_llm)
         summarization_thread = threading.Thread(target=summarize_and_log, args=(history, messages, qa_llm))
         summarization_thread.start()
         logging.info("Summarization thread started.")
@@ -685,7 +685,7 @@ def QA_RAG(graph,model, question, document_names, session_id, mode, write_access
             }
         else:
             result = process_chat_response(messages,history, question, model, graph, document_names,chat_mode_settings)
-
+            
     result["session_id"] = session_id
     
     return result
