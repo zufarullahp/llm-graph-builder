@@ -47,6 +47,8 @@ from src.shared.errors import app_error_handler, generic_error_handler, AppError
 
 # router domain 
 from src.api.routers.domains import router as domains_router
+# internal provision router
+from src.api.routers.internal_provision import router as internal_provision_router
 
 load_dotenv(override=True)
 
@@ -152,6 +154,7 @@ app.add_exception_handler(Exception, generic_error_handler)
 
 # register router domain 
 app.include_router(domains_router)
+app.include_router(internal_provision_router)
 
 @app.post("/url/scan")
 async def create_source_knowledge_graph_url(

@@ -1,0 +1,26 @@
+flowchart TD
+  UI[Client / Admin UI]
+  API[FastAPI - domain create endpoint]
+  Service[domain_service.create_domain_async]
+  PG_Insert[Postgres_Domain]
+  Commit[Commit]
+  Worker[Background worker / _provision_job_wrapper]
+  MarkProv["DomainGraph.provisionStatus = provisioning"]
+  Provisioner[graph_provisioner.provision_domain_graph]
+  Neo4jAdmin[Neo4j Admin API]
+  CreateDB["CREATE DATABASE (IF SUPPORTED)"]
+  WaitOnline[WaitOnline]
+  SaveCreds[SaveCredentials]
+  MarkOnline[Online]
+  MarkFailed[Failed]
+
+  UI -->|create domain| API --> Service --> PG_Insert --> Commit
+  Commit -->|enqueue or inline| Worker
+  Worker --> MarkProv --> Provisioner --> Neo4jAdmin
+  Neo4jAdmin --> CreateDB --> WaitOnline
+  WaitOnline -->|success| SaveCreds --> MarkOnline
+  WaitOnline -->|timeout/error| MarkFailed
+  CreateDB -->|unsupported| Provisioner --> SaveCreds
+
+  classDef pgState fill:#f9f,stroke:#333,stroke-width:1px;
+  class MarkProv,MarkOnline,MarkFailed pgState;

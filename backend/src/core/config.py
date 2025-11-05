@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # === Flags ===
     PROVISION_ASYNC: bool = Field(default=True, description="Enable async provisioning via queue backend")
 
+    # === Internal service token for provisioning endpoint ===
+    INTERNAL_PROVISION_TOKEN: str = Field(default="", description="Service token required for internal provisioning calls")
+
     # === Optional development flags ===
     ENVIRONMENT: str = Field(default="development", description="Environment: development / production / staging")
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")

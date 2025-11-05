@@ -489,7 +489,8 @@ def process_chat_response(messages, history, question, model, graph, document_na
             },
             "user": "chatbot"
         }
-
+# Prosess chat history summarization in a separate thread 
+# TODO: Edit function to use better history summarization approach
 def summarize_and_log(history, stored_messages, llm):
     logging.info("Starting summarization in a separate thread.")
     if not stored_messages:
