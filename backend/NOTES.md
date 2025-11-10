@@ -1,5 +1,5 @@
 # Project Notes — llm-graph-builder (FastAPI backend)
-
+<!-- cd C:\RnDGenAI\llm-graph-builder\backend\ -->
 Purpose
 -------
 Lightweight reference for an agent (Copilot) to understand the project structure, major packages, core models, service boundaries, and external dependencies.

@@ -622,6 +622,11 @@ def upload_file(graph, model, chunk, chunk_number:int, total_chunks:int, origina
   
   gcs_file_cache = os.environ.get('GCS_FILE_CACHE')
   logging.info(f'gcs file cache: {gcs_file_cache}')
+  # Resolve Uploadcare mode locally (Phase 2 dual-write). Use local vars only.
+  uploadcare_enabled = os.getenv("UPLOADCARE_ENABLED", "false").lower() == "true"
+  uploadcare_mode = os.getenv("UPLOADCARE_MODE", "local").lower()
+  if uploadcare_mode not in ("local", "dual", "uploadcare"):
+    uploadcare_mode = "local"
   
   if gcs_file_cache == 'True':
     folder_name = create_gcs_bucket_folder_name_hashed(uri,originalname)
@@ -642,6 +647,29 @@ def upload_file(graph, model, chunk, chunk_number:int, total_chunks:int, origina
         file_size = merge_file_gcs(BUCKET_UPLOAD, originalname, folder_name, int(total_chunks))
       else:
         file_size = merge_chunks_local(originalname, int(total_chunks), chunk_dir, merged_dir)
+        # merged_file_path available for local uploads
+        merged_file_path = os.path.join(merged_dir, originalname)
+        # Phase 2 dual-write: after successful local merge, optionally upload to Uploadcare
+        if uploadcare_enabled and uploadcare_mode == "dual":
+          meta = None
+          try:
+            from src.storage import uploadcare
+            # open file and upload bytes; tests will mock upload_file_direct
+            with open(merged_file_path, "rb") as _f:
+              meta = uploadcare.upload_file_direct(_f.read(), originalname)
+
+            logging.info(
+                "Dual-write: Uploadcare upload succeeded for %s, uuid=%s",
+                originalname,
+                meta.file_id,
+            )
+          except Exception as exc:
+            # Never break local canonical path — log and continue
+            logging.warning(
+                "Dual-write: Uploadcare upload failed for %s (ignored, local is canonical): %s",
+                originalname,
+                exc,
+            )
       
       logging.info("File merged successfully")
       file_extension = originalname.split('.')[-1]
@@ -661,6 +689,27 @@ def upload_file(graph, model, chunk, chunk_number:int, total_chunks:int, origina
       graphDb_data_Access = graphDBdataAccess(graph)
         
       graphDb_data_Access.create_source_node(obj_source_node)
+
+      # Phase 2.5: if dual-write succeeded, compute checksum and persist candidate metadata
+      try:
+        if uploadcare_enabled and uploadcare_mode == "dual" and meta is not None:
+          try:
+            from src.storage import uploadcare as _uploadcare
+            # compute local checksum
+            checksum = _uploadcare.calculate_checksum(merged_file_path)
+          except Exception as exc:
+            checksum = None
+            logging.warning("Dual-write: failed to compute checksum for %s: %s", originalname, exc)
+
+          if meta and meta.file_id:
+            try:
+              graphDb_data_Access.set_candidate_file_metadata(originalname, meta.file_id, checksum)
+              logging.info("Dual-write: persisted candidate metadata for %s (uuid=%s, checksum=%s)", originalname, meta.file_id, checksum)
+            except Exception as exc:
+              logging.warning("Dual-write: failed to persist candidate metadata for %s: %s", originalname, exc)
+      except Exception:
+        # Defensive: do not allow any candidate persistence path to interrupt main flow
+        logging.warning("Dual-write: unexpected error while persisting candidate metadata for %s", originalname)
       return {'file_size': file_size, 'file_name': originalname, 'file_extension':file_extension, 'message':f"Chunk {chunk_number}/{total_chunks} saved"}
   return f"Chunk {chunk_number}/{total_chunks} saved"
 

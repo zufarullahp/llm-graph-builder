@@ -271,6 +271,22 @@ class graphDBdataAccess:
         logging.error("Failed to execute query after maximum retries due to persistent deadlocks.")
         raise RuntimeError("Query execution failed after multiple retries due to deadlock.")
 
+    def set_candidate_file_metadata(self, file_name: str, candidate_id: str, candidate_checksum: str | None):
+        """Persist non-authoritative candidate storage metadata on a Document node.
+
+        This method is idempotent and will create the Document node if missing. It only
+        sets candidate fields and does not modify canonical file_storage_type or file_storage_id.
+        """
+        try:
+            query = "MERGE(d:Document {fileName: $file_name}) SET d.file_storage_candidate_id = $candidate_id, d.file_storage_candidate_checksum = $candidate_checksum"
+            params = {"file_name": file_name, "candidate_id": candidate_id, "candidate_checksum": candidate_checksum}
+            self.graph.query(query, params, session_params={"database": self.graph._database})
+        except Exception as e:
+            logging.warning(f"Failed to persist candidate file metadata for {file_name}: {e}")
+            # Do not raise; candidate persistence failures must not block main flow
+            return False
+        return True
+
     def get_current_status_document_node(self, file_name):
         query = """
                 MATCH(d:Document {fileName : $file_name}) RETURN d.status AS Status , d.processingTime AS processingTime, 
