@@ -307,29 +307,58 @@ QUESTION_TRANSFORM_TEMPLATE = "Given the below conversation, generate a search q
 ## CHAT QUERIES
 VECTOR_SEARCH_TOP_K = 5
 
+# VECTOR_SEARCH_QUERY = """
+# WITH node AS chunk, score
+# MATCH (chunk)-[:PART_OF]->(d:Document)
+# WITH d, 
+#      collect(distinct {chunk: chunk, score: score}) AS chunks, 
+#      avg(score) AS avg_score
+
+# WITH d, avg_score, 
+#      [c IN chunks | c.chunk.text] AS texts, 
+#      [c IN chunks | {id: c.chunk.id, score: c.score}] AS chunkdetails
+
+# WITH d, avg_score, chunkdetails, 
+#      apoc.text.join(texts, "\n----\n") AS text
+
+# RETURN text, 
+#        avg_score AS score, 
+#        {source: COALESCE(CASE WHEN d.url CONTAINS "None" 
+#                              THEN d.fileName 
+#                              ELSE d.url 
+#                        END, 
+#                        d.fileName), 
+#         chunkdetails: chunkdetails} AS metadata
+# """ 
+
 VECTOR_SEARCH_QUERY = """
 WITH node AS chunk, score
 MATCH (chunk)-[:PART_OF]->(d:Document)
-WITH d, 
-     collect(distinct {chunk: chunk, score: score}) AS chunks, 
+WITH d,
+     collect(distinct {chunk: chunk, score: score}) AS chunks,
      avg(score) AS avg_score
 
-WITH d, avg_score, 
-     [c IN chunks | c.chunk.text] AS texts, 
-     [c IN chunks | {id: c.chunk.id, score: c.score}] AS chunkdetails
+WITH d, avg_score,
+     [c IN chunks | c.chunk.text] AS texts,
+     // Use elementId(chunk) so Python can link via save_history_graph
+     [c IN chunks | {id: elementId(c.chunk), score: c.score}] AS chunkdetails
 
-WITH d, avg_score, chunkdetails, 
+WITH d, avg_score, chunkdetails,
      apoc.text.join(texts, "\n----\n") AS text
 
-RETURN text, 
-       avg_score AS score, 
-       {source: COALESCE(CASE WHEN d.url CONTAINS "None" 
-                             THEN d.fileName 
-                             ELSE d.url 
-                       END, 
-                       d.fileName), 
-        chunkdetails: chunkdetails} AS metadata
-""" 
+RETURN text,
+       avg_score AS score,
+       {
+         source: COALESCE(
+           CASE
+             WHEN d.url CONTAINS "None" THEN d.fileName
+             ELSE d.url
+           END,
+           d.fileName
+         ),
+         chunkdetails: chunkdetails
+       } AS metadata
+"""
 
 ### Vector graph search 
 VECTOR_GRAPH_SEARCH_ENTITY_LIMIT = 40
@@ -455,7 +484,7 @@ VECTOR_GRAPH_SEARCH_QUERY_SUFFIX = """
 // Generate metadata and text components for chunks, nodes, and relationships
 WITH d, avg_score,
     [c IN chunks | c.chunk.text] AS texts,
-    [c IN chunks | {id: c.chunk.id, score: c.score}] AS chunkdetails,
+    [c IN chunks | {id: elementId(c.chunk), score: c.score}] AS chunkdetails,
     [n IN nodes | elementId(n)] AS entityIds,
     [r IN rels | elementId(r)] AS relIds,
     apoc.coll.sort([
@@ -495,7 +524,11 @@ RETURN
    avg_score AS score,
    {
        length: size(text),
-       source: COALESCE(CASE WHEN d.url CONTAINS "None" THEN d.fileName ELSE d.url END, d.fileName),
+       source: CASE
+              WHEN d.url IS NOT NULL AND d.url <> '' AND NOT d.url CONTAINS 'None'
+                THEN d.url
+              ELSE d.fileName
+            END,
        chunkdetails: chunkdetails,
        entities : {
            entityids: entityIds,

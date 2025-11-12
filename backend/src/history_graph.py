@@ -3,15 +3,32 @@ import logging
 from typing import List, Optional
 
 def _run_query(graph, cypher: str, params: dict, access: str = "READ"):
-    # Works with LangChain Neo4jGraph (has .query) or neo4j.Driver
+    """
+    Run a Cypher query against either:
+    - LangChain-style Neo4jGraph (has .query(cypher, params))
+    - neo4j.Driver from official driver
+
+    `access` is only used to choose READ/WRITE mode for the low-level driver.
+    """
+    # Case 1: LangChain / Neo4jGraph style wrapper
     if hasattr(graph, "query"):
-        return graph.query(cypher, params, access)
-    from neo4j import Driver
-    if isinstance(graph, Driver):
-        with graph.session() as s:
-            res = s.run(cypher, **params)
-            return [r.data() for r in res]
-    raise RuntimeError("Unsupported graph connection type")
+        # Most wrappers expect (cypher, params) and handle routing internally
+        return graph.query(cypher, params)
+
+    # Case 2: Native neo4j.Driver
+    try:
+        from neo4j import Driver
+    except ImportError:
+        Driver = None
+
+    if Driver is not None and isinstance(graph, Driver):
+        mode = "WRITE" if access == "WRITE" else "READ"
+        with graph.session(default_access_mode=mode) as session:
+            result = session.run(cypher, **params)
+            return [record.data() for record in result]
+
+    raise RuntimeError("Unsupported graph connection type for _run_query")
+
 
 def ensure_constraints(graph):
     cyphers = [
@@ -29,16 +46,27 @@ def clear_history_graph(graph, session_id: str) -> None:
     """, {"sessionId": session_id}, "WRITE")
 
 def get_history_graph(graph, session_id: str, limit: int = 5):
+    """
+    Return last `limit` Response nodes (following NEXT chain to LAST_RESPONSE),
+    including any CONTEXT elementIds.
+    """
     cypher = f"""
     MATCH (:Session {{id:$sessionId}})-[:LAST_RESPONSE]->(last)
     MATCH p=(start)-[:NEXT*0..{limit}]->(last)
-    WHERE length(p)={limit} OR NOT exists {{ ()-[:NEXT]->(start) }}
-    UNWIND nodes(p) AS r
-    RETURN r.id AS id, r.input AS input, r.rephrasedQuestion AS rephrasedQuestion,
-           r.output AS output, r.cypher AS cypher, r.createdAt AS createdAt,
-           [ (r)-[:CONTEXT]->(n) | elementId(n) ] AS context
+    WHERE length(p) = {limit} OR NOT EXISTS {{ ()-[:NEXT]->(start) }}
+    WITH nodes(p) AS ns
+    UNWIND ns AS r
+    RETURN
+        r.id AS id,
+        r.input AS input,
+        r.rephrasedQuestion AS rephrasedQuestion,
+        r.output AS output,
+        r.cypher AS cypher,
+        r.createdAt AS createdAt,
+        [ (r)-[:CONTEXT]->(n) | elementId(n) ] AS context
     """
     return _run_query(graph, cypher, {"sessionId": session_id}, "READ")
+
 
 def save_history_graph(
     graph,

@@ -36,6 +36,8 @@ from src.llm import get_llm
 from src.shared.common_fn import load_embedding_model
 from src.shared.constants import *
 
+from src.history_graph import get_history_graph, save_history_graph
+
 
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 EMBEDDING_FUNCTION , _ = load_embedding_model(EMBEDDING_MODEL) 
@@ -52,6 +54,75 @@ class SessionChatHistory:
         else:
             logging.info(f"Retrieved existing ChatMessageHistory Local for session ID: {session_id}")
         return cls.history_dict[session_id]
+
+def get_history_context_from_graph(graph, session_id: str, limit: int = 5):
+    """
+    Fetch recent conversation from history_graph and turn it into a compact text block.
+    Used as context for rephrasing the latest user message.
+    """
+    try:
+        rows = get_history_graph(graph, session_id, limit)
+    except Exception as e:
+        logging.error(f"Error reading history graph for session {session_id}: {e}")
+        return "", []
+
+    if not rows:
+        return "", []
+
+    # Rows are ordered along the NEXT chain to 'last'
+    lines = []
+    for r in rows:
+        user_input = r.get("input")
+        output = r.get("output")
+
+        if user_input:
+            lines.append(f"User: {user_input}")
+        if output:
+            lines.append(f"Assistant: {output}")
+
+    history_text = "\n".join(lines)
+    return history_text, rows
+
+def rephrase_with_history_graph(llm, graph, session_id: str, user_question: str, limit: int = 5) -> tuple[str, list[dict]]:
+    """
+    Use history_graph to rewrite the latest user message into
+    a standalone question that includes resolved references.
+    Returns (rephrased_question, history_rows).
+    Falls back to original question on error/empty history.
+    """
+    history_text, rows = get_history_context_from_graph(graph, session_id, limit)
+
+    if not history_text:
+        # No previous context: just use the raw question
+        return user_question, rows
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a rewriting assistant for a retrieval-augmented chatbot. "
+         "Given the prior conversation and the user's latest message, "
+         "rewrite ONLY the latest message into a fully self-contained question. "
+         "Resolve pronouns and references using the chat history. "
+         "Do NOT answer the question. Do NOT add explanations."),
+        ("human",
+         "Chat history:\n{history}\n\n"
+         "User's latest message:\n{question}\n\n"
+         "Rewritten standalone question:")
+    ])
+
+    chain = prompt | llm | StrOutputParser()
+
+    try:
+        rephrased = chain.invoke({
+            "history": history_text,
+            "question": user_question
+        }).strip()
+        if not rephrased:
+            return user_question, rows
+        return rephrased, rows
+    except Exception as e:
+        logging.error(f"Failed to rephrase with history graph for session {session_id}: {e}")
+        return user_question, rows
+
 
 class CustomCallback(BaseCallbackHandler):
 
@@ -157,25 +228,39 @@ def get_sources_and_chunks(sources_used, docs):
     return result
 
 def get_rag_chain(llm, system_template=CHAT_SYSTEM_TEMPLATE):
+    """
+    RAG chain that:
+    - Injects retrieved `context` into the system message.
+    - Uses prior `messages` for conversational continuity.
+    - Answers ONLY from the provided context.
+    """
     try:
         question_answering_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", system_template),
-                MessagesPlaceholder(variable_name="messages"),
                 (
-                    "human",
-                    "User question: {input}"
+                    "system",
+                    system_template
+                    + "\n\nYou are a retrieval-augmented assistant. "
+                    + "Use ONLY the information in the provided context to answer. "
+                    + "If the answer is not in the context, say you do not know.\n\n"
+                    + "Always respond in the same language as the user's latest question, "
+                    + "unless they explicitly ask for another language.\n\n"
+                    + "Context:\n{context}"
                 ),
+                # History (can be from Neo4jChatMessageHistory or our history_graph-driven reconstruction)
+                MessagesPlaceholder(variable_name="messages"),
+                # Latest user question (can be standalone after rephrase)
+                ("human", "{input}"),
             ]
         )
 
-        question_answering_chain = question_answering_prompt | llm
-
-        return question_answering_chain
+        return question_answering_prompt | llm
 
     except Exception as e:
         logging.error(f"Error creating RAG chain: {e}")
         raise
+
+
 
 def format_documents(documents, model,chat_mode_settings):
     prompt_token_cutoff = 4
@@ -225,49 +310,89 @@ def format_documents(documents, model,chat_mode_settings):
     
     return "\n\n".join(formatted_docs), sources,entities,global_communities
 
-def process_documents(docs, question, messages, llm, model,chat_mode_settings):
+def process_documents(docs, question, messages, llm, model, chat_mode_settings):
+    """
+    Run the RAG pipeline:
+    - format_documents -> context string + metadata
+    - invoke get_rag_chain with messages, context, and question
+    - construct structured result (sources, nodedetails, entities)
+    """
     start_time = time.time()
-    
+
     try:
-        formatted_docs, sources, entitydetails, communities = format_documents(docs, model,chat_mode_settings)
-        
+        # 1️⃣ Build context + metadata from retrieved docs
+        formatted_docs, sources, entitydetails, communities = format_documents(
+            docs,
+            model,
+            chat_mode_settings
+        )
+
+        # 2️⃣ RAG chain with context injection
         rag_chain = get_rag_chain(llm=llm)
-        
-        ai_response = rag_chain.invoke({
-            "messages": messages[:-1],
-            "context": formatted_docs,
-            "input": question
-        })
 
-        result = {'sources': list(), 'nodedetails': dict(), 'entities': dict()}
-        node_details = {"chunkdetails":list(),"entitydetails":list(),"communitydetails":list()}
-        entities = {'entityids':list(),"relationshipids":list()}
+        ai_response = rag_chain.invoke(
+            {
+                "messages": messages[:-1],
+                "context": formatted_docs,
+                "input": question,
+            }
+        )
 
-        if chat_mode_settings["mode"] == CHAT_ENTITY_VECTOR_MODE:
-            node_details["entitydetails"] = entitydetails
+        # 3️⃣ Prepare result structure
+        result = {
+            "sources": [],
+            "nodedetails": {
+                "chunkdetails": [],
+                "entitydetails": [],
+                "communitydetails": [],
+            },
+            "entities": {
+                "entityids": [],
+                "relationshipids": [],
+            },
+        }
 
-        elif chat_mode_settings["mode"] == CHAT_GLOBAL_VECTOR_FULLTEXT_MODE:
-            node_details["communitydetails"] = communities
+        mode = chat_mode_settings.get("mode")
+
+        if mode == CHAT_ENTITY_VECTOR_MODE:
+            # Entity view
+            result["nodedetails"]["entitydetails"] = entitydetails or {}
+
+        elif mode == CHAT_GLOBAL_VECTOR_FULLTEXT_MODE:
+            # Community/global view
+            result["nodedetails"]["communitydetails"] = communities or []
+
         else:
+            # Standard/vector modes:
             sources_and_chunks = get_sources_and_chunks(sources, docs)
-            result['sources'] = sources_and_chunks['sources']
-            node_details["chunkdetails"] = sources_and_chunks["chunkdetails"]
-            entities.update(entitydetails)
+            result["sources"] = sources_and_chunks.get("sources", [])
+            result["nodedetails"]["chunkdetails"] = sources_and_chunks.get("chunkdetails", [])
 
-        result["nodedetails"] = node_details
-        result["entities"] = entities
+            # Merge entity ids if present
+            if isinstance(entitydetails, dict):
+                if "entityids" in entitydetails:
+                    result["entities"]["entityids"] = list(
+                        set(result["entities"]["entityids"]) | set(entitydetails.get("entityids", []))
+                    )
+                if "relationshipids" in entitydetails:
+                    result["entities"]["relationshipids"] = list(
+                        set(result["entities"]["relationshipids"]) | set(entitydetails.get("relationshipids", []))
+                    )
 
+        # 4️⃣ Extract content + token usage
         content = ai_response.content
         total_tokens = get_total_tokens(ai_response, llm)
-        
+
         predict_time = time.time() - start_time
         logging.info(f"Final response predicted in {predict_time:.2f} seconds")
 
+        return content, result, total_tokens, formatted_docs
+
     except Exception as e:
-        logging.error(f"Error processing documents: {e}")
+        logging.error(f"Error processing documents: {e}", exc_info=True)
         raise
-    
-    return content, result, total_tokens, formatted_docs
+
+
 
 def retrieve_documents(doc_retriever, messages):
 
@@ -431,33 +556,86 @@ def setup_chat(model, graph, document_names, chat_mode_settings):
     
     return llm, doc_retriever, model_name
 
-def process_chat_response(messages, history, question, model, graph, document_names, chat_mode_settings):
+def process_chat_response(messages, history, question, model, graph, document_names, chat_mode_settings, session_id):
     try:
         llm, doc_retriever, model_version = setup_chat(model, graph, document_names, chat_mode_settings)
-        
-        docs,transformed_question = retrieve_documents(doc_retriever, messages)  
+
+        # 1️⃣ Rephrase latest question using history_graph
+        standalone_question, history_rows = rephrase_with_history_graph(
+            llm=llm,
+            graph=graph,
+            session_id=session_id,
+            user_question=question,
+            limit=chat_mode_settings.get("history_limit", 5),
+        )
+
+        # 2️⃣ Build messages for retrieval from history_graph + current standalone question
+        #    This avoids depending on lossy LangChain summaries.
+        messages_for_retriever = []
+        if history_rows:
+            for r in history_rows:
+                if r.get("input"):
+                    messages_for_retriever.append(HumanMessage(content=r["input"]))
+                if r.get("output"):
+                    messages_for_retriever.append(AIMessage(content=r["output"]))
+
+        messages_for_retriever.append(HumanMessage(content=standalone_question))
+
+        # 3️⃣ Retrieve docs using this constructed message list
+        docs, transformed_question = retrieve_documents(doc_retriever, messages_for_retriever)
 
         if docs:
-            content, result, total_tokens,formatted_docs = process_documents(docs, question, messages, llm, model, chat_mode_settings)
+            # Use standalone_question (or transformed_question if you prefer) as the actual query
+            effective_question = transformed_question or standalone_question
+
+            content, result, total_tokens, formatted_docs = process_documents(
+                docs=docs,
+                question=effective_question,
+                messages=messages_for_retriever,
+                llm=llm,
+                model=model,
+                chat_mode_settings=chat_mode_settings
+            )
         else:
             content = "I couldn't find any relevant documents to answer your question."
-            result = {"sources": list(), "nodedetails": list(), "entities": list()}
+            result = {"sources": [], "nodedetails": {"chunkdetails": []}, "entities": {}}
             total_tokens = 0
             formatted_docs = ""
-        
+
+        # 4️⃣ Append assistant response to LangChain history (if you still want that)
         ai_response = AIMessage(content=content)
         messages.append(ai_response)
 
+        # 5️⃣ Persist turn into history_graph
+        try:
+            # Collect context ids from chunks, if available
+            chunkdetails = result.get("nodedetails", {}).get("chunkdetails", [])
+            ctx_ids = [c.get("id") for c in chunkdetails if c.get("id")]
+
+            save_history_graph(
+                graph=graph,
+                session_id=session_id,
+                source="rag",
+                input_text=question,
+                rephrased=standalone_question,
+                output_text=content,
+                ids=ctx_ids,
+                cypher=None,
+            )
+        except Exception as e:
+            logging.error(f"Failed to save history_graph for session {session_id}: {e}")
+
+        # 6️⃣ (Optional) keep your async summarization for LangChain history if you like
         summarization_thread = threading.Thread(target=summarize_and_log, args=(history, messages, llm))
         summarization_thread.start()
         logging.info("Summarization thread started.")
-        # summarize_and_log(history, messages, llm)
-        metric_details = {"question":question,"contexts":formatted_docs,"answer":content}
+
+        metric_details = {"question": question, "contexts": formatted_docs, "answer": content}
+
         return {
-            "session_id": "",  
+            "session_id": session_id,
             "message": content,
             "info": {
-                # "metrics" : metrics,
                 "sources": result["sources"],
                 "model": model_version,
                 "nodedetails": result["nodedetails"],
@@ -467,17 +645,16 @@ def process_chat_response(messages, history, question, model, graph, document_na
                 "entities": result["entities"],
                 "metric_details": metric_details,
             },
-            
-            "user": "chatbot"
+            "user": "chatbot",
         }
-    
+
     except Exception as e:
         logging.exception(f"Error processing chat response at {datetime.now()}: {str(e)}")
         return {
-            "session_id": "",
+            "session_id": session_id,
             "message": "Something went wrong",
             "info": {
-                "metrics" : [],
+                "metrics": [],
                 "sources": [],
                 "nodedetails": [],
                 "total_tokens": 0,
@@ -487,8 +664,9 @@ def process_chat_response(messages, history, question, model, graph, document_na
                 "entities": [],
                 "metric_details": {},
             },
-            "user": "chatbot"
+            "user": "chatbot",
         }
+
 # Prosess chat history summarization in a separate thread 
 # TODO: Edit function to use better history summarization approach
 def summarize_and_log(history, stored_messages, llm):
@@ -550,46 +728,175 @@ def create_graph_chain(model, graph):
     except Exception as e:
         logging.error(f"An error occurred while creating the GraphCypherQAChain instance. : {e}") 
 
-def get_graph_response(graph_chain, question):
+def get_graph_response(graph_chain, question: str) -> dict:
+    """
+    Wrapper aman untuk GraphCypherQAChain / graph_chain.
+    Selalu mengembalikan dict dengan key:
+      - response: jawaban natural language
+      - cypher_query: query yang dieksekusi (jika tersedia)
+      - context: hasil mentah / rows (opsional)
+      - context_ids: list elementId node/rel (opsional, untuk history_graph)
+      - error: pesan error jika ada kegagalan
+    """
     try:
-        cypher_res = graph_chain.invoke({"query": question})
-        
-        response = cypher_res.get("result")
+        # Banyak implementasi GraphCypherQAChain mengembalikan dict:
+        # {
+        #   "result": "...",
+        #   "intermediate_steps": [("query", "<cypher>"), ("result", [...])]
+        # }
+        res = graph_chain.invoke({"query": question}) if hasattr(graph_chain, "invoke") else graph_chain.run(question)
+
         cypher_query = ""
-        context = []
+        context = ""
+        context_ids = []
 
-        for step in cypher_res.get("intermediate_steps", []):
-            if "query" in step:
-                cypher_string = step["query"]
-                cypher_query = cypher_string.replace("cypher\n", "").replace("\n", " ").strip() 
-            elif "context" in step:
-                context = step["context"]
+        # Dict style (GraphCypherQAChain LangChain baru)
+        if isinstance(res, dict):
+            # Ambil jawaban utama
+            response_text = res.get("result") or res.get("response") or ""
+
+            steps = res.get("intermediate_steps") or res.get("intermediate_steps".upper())
+
+            if steps:
+                # steps bisa berupa list of tuples atau list of dicts tergantung versi
+                for step in steps:
+                    # Format tuple: ("query", "<cypher>")
+                    if isinstance(step, tuple) and len(step) >= 2:
+                        tag, val = step[0], step[1]
+                        if str(tag).lower() in ("query", "cypher"):
+                            cypher_query = val
+                        elif str(tag).lower() in ("result", "data"):
+                            context = str(val)
+                    # Format dict: {"query": "..."} / {"cypher": "..."} / {"result": ...}
+                    elif isinstance(step, dict):
+                        if "query" in step:
+                            cypher_query = step["query"]
+                        if "cypher" in step:
+                            cypher_query = step["cypher"]
+                        if "result" in step:
+                            context = str(step["result"])
+
+            return {
+                "response": response_text or str(res),
+                "cypher_query": cypher_query,
+                "context": context,
+                "context_ids": context_ids,
+            }
+
+        # Non-dict: anggap string / lain-lain
         return {
-            "response": response,
-            "cypher_query": cypher_query,
-            "context": context
+            "response": str(res),
+            "cypher_query": "",
+            "context": "",
+            "context_ids": [],
         }
-    
-    except Exception as e:
-        logging.error(f"An error occurred while getting the graph response : {e}")
 
-def process_graph_response(model, graph, question, messages, history):
+    except Exception as e:
+        # DI SINI sebelumnya kamu cuma log error dan return None → bikin crash.
+        logging.error(f"An error occurred while getting the graph response : {e}")
+        return {
+            "response": "Maaf, terjadi kesalahan saat menjalankan query ke knowledge graph.",
+            "cypher_query": "",
+            "context": "",
+            "context_ids": [],
+            "error": str(e),
+        }
+
+
+def process_graph_response(model, graph, question, messages, history, session_id):
+    """
+    Graph QA dengan:
+    - Rephrase question (standalone) pakai history_graph.
+    - Panggil GraphCypherQAChain via get_graph_response().
+    - Simpan turn ke history_graph (input, rephrased, output, cypher, context_ids).
+    - Summarization hanya untuk logging, bukan sebagai konteks utama.
+    """
+    model_version = ""
     try:
+        # 1️⃣ Build graph chain & LLM
         graph_chain, qa_llm, model_version = create_graph_chain(model, graph)
-        
-        graph_response = get_graph_response(graph_chain, question)
-        
-        ai_response_content = graph_response.get("response", "Something went wrong")
+
+        # 2️⃣ Ambil history dari history_graph
+        try:
+            history_rows = get_history_graph(graph, session_id, limit=5)
+        except Exception as e:
+            logging.error(f"Error reading history graph for session {session_id}: {e}")
+            history_rows = []
+
+        # 3️⃣ Rephrase pertanyaan jadi standalone (untuk bantu LLM buat Cypher)
+        try:
+            standalone_prompt = (
+                "Rephrase the user's last question into a single, clear, self-contained question. "
+                "Use prior Q&A only if needed for clarification. "
+                "Do not answer, just return the rewritten question."
+            )
+
+            rephrase_messages = [{"role": "system", "content": standalone_prompt}]
+
+            for r in history_rows or []:
+                if r.get("input"):
+                    rephrase_messages.append({"role": "user", "content": r["input"]})
+                if r.get("output"):
+                    rephrase_messages.append({"role": "assistant", "content": r["output"]})
+
+            rephrase_messages.append({"role": "user", "content": question})
+
+            rephrase_resp = qa_llm.invoke(rephrase_messages)
+            standalone_question = (
+                rephrase_resp.content.strip()
+                if hasattr(rephrase_resp, "content")
+                else str(rephrase_resp).strip()
+            )
+        except Exception as e:
+            logging.error(f"Failed to rephrase question for graph mode, fallback to original. Error: {e}")
+            standalone_question = question
+
+        logging.info("Graph question transformed")
+
+        # 4️⃣ Panggil GraphCypherQAChain melalui wrapper
+        graph_response = get_graph_response(graph_chain, standalone_question)
+
+        # 5️⃣ Ambil jawaban; fallback kalau kosong
+        ai_response_content = graph_response.get("response") or \
+            "Maaf, saya tidak menemukan jawaban berdasarkan data graph yang tersedia."
+
         ai_response = AIMessage(content=ai_response_content)
-        
         messages.append(ai_response)
-        summarize_and_log(history, messages, qa_llm)
-        summarization_thread = threading.Thread(target=summarize_and_log, args=(history, messages, qa_llm))
+
+        # 6️⃣ Simpan ke history_graph
+        try:
+            ctx_ids = graph_response.get("context_ids") or []
+            save_history_graph(
+                graph=graph,
+                session_id=session_id,
+                source="graph",
+                input_text=question,                  # pertanyaan asli user
+                rephrased=standalone_question,        # pertanyaan yang diperjelas
+                output_text=ai_response_content,
+                ids=ctx_ids,                          # bisa kosong jika belum ada mapping elementId
+                cypher=graph_response.get("cypher_query", ""),
+            )
+        except Exception as e:
+            logging.error(f"Failed to save graph history for session {session_id}: {e}")
+
+        # 7️⃣ Summarization untuk logging saja (tidak dipakai sebagai context prompt utama)
+        summarization_thread = threading.Thread(
+            target=summarize_and_log,
+            args=(history, messages, qa_llm),
+        )
         summarization_thread.start()
         logging.info("Summarization thread started.")
-        metric_details = {"question":question,"contexts":graph_response.get("context", ""),"answer":ai_response_content}
-        result = {
-            "session_id": "", 
+
+        # 8️⃣ Bungkus hasil ke response API
+        metric_details = {
+            "question": question,
+            "contexts": graph_response.get("context", ""),
+            "answer": ai_response_content,
+            "error": graph_response.get("error", ""),
+        }
+
+        return {
+            "session_id": session_id,
             "message": ai_response_content,
             "info": {
                 "model": model_version,
@@ -599,26 +906,27 @@ def process_graph_response(model, graph, question, messages, history):
                 "response_time": 0,
                 "metric_details": metric_details,
             },
-            "user": "chatbot"
+            "user": "chatbot",
         }
-        
-        return result
-    
+
     except Exception as e:
         logging.exception(f"Error processing graph response at {datetime.now()}: {str(e)}")
         return {
-            "session_id": "",  
-            "message": "Something went wrong",
+            "session_id": session_id,
+            "message": "Maaf, terjadi kesalahan saat memproses pertanyaan di mode graph.",
             "info": {
                 "model": model_version,
                 "cypher_query": "",
                 "context": "",
                 "mode": "graph",
                 "response_time": 0,
-                "error": f"{type(e).__name__}: {str(e)}"
+                "error": f"{type(e).__name__}: {str(e)}",
+                "metric_details": {},
             },
-            "user": "chatbot"
+            "user": "chatbot",
         }
+
+
 
 def create_neo4j_chat_message_history(graph, session_id, write_access=True):
     """
@@ -664,7 +972,7 @@ def QA_RAG(graph,model, question, document_names, session_id, mode, write_access
     messages.append(user_question)
 
     if mode == CHAT_GRAPH_MODE:
-        result = process_graph_response(model, graph, question, messages, history)
+        result = process_graph_response(model=model, graph=graph, question=question, messages=messages, history=history, session_id=session_id,)
     else:
         chat_mode_settings = get_chat_mode_settings(mode=mode)
         document_names= list(map(str.strip, json.loads(document_names)))
@@ -685,7 +993,7 @@ def QA_RAG(graph,model, question, document_names, session_id, mode, write_access
                 "user": "chatbot"
             }
         else:
-            result = process_chat_response(messages,history, question, model, graph, document_names,chat_mode_settings)
+            result = process_chat_response(messages=messages,history=history, question=question, model=model, graph=graph, document_names=document_names,chat_mode_settings=chat_mode_settings,session_id=session_id)
             
     result["session_id"] = session_id
     
