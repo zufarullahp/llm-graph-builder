@@ -176,3 +176,4 @@ startupbackend.sh
 startupfrontend.sh
 
 backend/node_modules/
+node_modules/

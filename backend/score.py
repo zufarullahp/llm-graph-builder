@@ -580,6 +580,8 @@ async def connect(uri=Form(None), userName=Form(None), password=Form(None), data
     try:
         start = time.time()
         graph = create_graph_database_connection(uri, userName, password, database)
+        graph_db = graphDBdataAccess(graph)
+        graph_db.ensure_chatdb_constraints()
         result = await asyncio.to_thread(connection_check_and_get_vector_dimensions, graph, database)
         gcs_file_cache = os.environ.get('GCS_FILE_CACHE')
         end = time.time()

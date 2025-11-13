@@ -18,6 +18,20 @@ class graphDBdataAccess:
     def __init__(self, graph: Neo4jGraph):
         self.graph = graph
 
+    def ensure_chatdb_constraints(self):
+        cyphers = [
+            "CREATE CONSTRAINT session_id IF NOT EXISTS FOR (s:Session) REQUIRE s.id IS UNIQUE",
+            "CREATE CONSTRAINT response_id IF NOT EXISTS FOR (r:Response) REQUIRE r.id IS UNIQUE",
+            "CREATE INDEX response_createdAt IF NOT EXISTS FOR (r:Response) ON (r.createdAt)"
+        ]
+        for c in cyphers:
+            try:
+                self.graph.query(c,session_params={"database":self.graph._database})
+            except Exception as e:
+                error_message = str(e)
+                logging.error(f"Error in creating chatdb constraints: {error_message}")
+                raise
+
     def update_exception_db(self, file_name, exp_msg, retry_condition=None):
         try:
             job_status = "Failed"
