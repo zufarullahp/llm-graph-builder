@@ -38,6 +38,11 @@ from src.shared.constants import *
 
 from src.history_graph import get_history_graph, save_history_graph
 
+from src.proactive_controller import (
+    register_user_turn,
+    maybe_trigger_proactive_followup,
+)
+
 
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 EMBEDDING_FUNCTION , _ = load_embedding_model(EMBEDDING_MODEL) 
@@ -558,7 +563,23 @@ def setup_chat(model, graph, document_names, chat_mode_settings):
 
 def process_chat_response(messages, history, question, model, graph, document_names, chat_mode_settings, session_id):
     try:
+        # 🔢 Register turn for proactive controller
+        try:
+            session_state = register_user_turn(graph, session_id)
+            logging.info(
+                "[Proactive][Chat] register_user_turn session=%s turn=%s enabled=%s",
+                session_id,
+                session_state.get("turnCount"),
+                session_state.get("proactive_enabled"),
+            )
+        except Exception as e:
+            logging.error(f"Failed to register user turn (chat) for {session_id}: {e}")
+
         llm, doc_retriever, model_version = setup_chat(model, graph, document_names, chat_mode_settings)
+        logging.debug(
+            f"Chat LLM and document retriever initialized: version={model_version} mode={chat_mode_settings.get('mode')}"
+            f"[Proactive][Chat] setup_chat done session={session_id} "
+        )
 
         # 1️⃣ Rephrase latest question using history_graph
         standalone_question, history_rows = rephrase_with_history_graph(
@@ -570,7 +591,6 @@ def process_chat_response(messages, history, question, model, graph, document_na
         )
 
         # 2️⃣ Build messages for retrieval from history_graph + current standalone question
-        #    This avoids depending on lossy LangChain summaries.
         messages_for_retriever = []
         if history_rows:
             for r in history_rows:
@@ -585,7 +605,6 @@ def process_chat_response(messages, history, question, model, graph, document_na
         docs, transformed_question = retrieve_documents(doc_retriever, messages_for_retriever)
 
         if docs:
-            # Use standalone_question (or transformed_question if you prefer) as the actual query
             effective_question = transformed_question or standalone_question
 
             content, result, total_tokens, formatted_docs = process_documents(
@@ -596,19 +615,33 @@ def process_chat_response(messages, history, question, model, graph, document_na
                 model=model,
                 chat_mode_settings=chat_mode_settings
             )
+            logging.debug(
+                f"[Proactive][Chat] retrieval_done session={session_id} "
+                f"docs={len(docs)} transformed_question={bool(transformed_question)}"
+            )
         else:
             content = "I couldn't find any relevant documents to answer your question."
             result = {"sources": [], "nodedetails": {"chunkdetails": []}, "entities": {}}
             total_tokens = 0
             formatted_docs = ""
+            logging.info(
+                f"[Proactive][Chat] retrieval_empty session={session_id} "
+                f"no docs found for question='{question[:120]}'"
+            )
+        
+        logging.debug(
+            f"[Proactive][Chat] rag_result session={session_id} "
+            f"sources={len(result.get('sources', []))} "
+            f"chunkdetails={len(result.get('nodedetails', {}).get('chunkdetails', []))} "
+            f"has_entities_keys={list((result.get('entities') or {}).keys())}"
+        )
 
-        # 4️⃣ Append assistant response to LangChain history (if you still want that)
+        # 4️⃣ Append assistant response to LangChain history
         ai_response = AIMessage(content=content)
         messages.append(ai_response)
 
-        # 5️⃣ Persist turn into history_graph
+        # 5️⃣ Persist turn into history_graph (primary answer)
         try:
-            # Collect context ids from chunks, if available
             chunkdetails = result.get("nodedetails", {}).get("chunkdetails", [])
             ctx_ids = [c.get("id") for c in chunkdetails if c.get("id")]
 
@@ -621,11 +654,49 @@ def process_chat_response(messages, history, question, model, graph, document_na
                 output_text=content,
                 ids=ctx_ids,
                 cypher=None,
+                response_type="answer",
+                proactive_reason=None,
+                trigger_meta=None,
             )
         except Exception as e:
             logging.error(f"Failed to save history_graph for session {session_id}: {e}")
 
-        # 6️⃣ (Optional) keep your async summarization for LangChain history if you like
+        # 6️⃣ Proactive DPE + Composer (Sprint 2)
+        followup_text = None
+        try:
+            logging.debug(
+                f"[Proactive][Chat] maybe_trigger_proactive_followup call "
+                f"session={session_id} mode={chat_mode_settings.get('mode', 'rag')}"
+            )
+            followup_text = maybe_trigger_proactive_followup(
+                graph=graph,
+                session_id=session_id,
+                mode=chat_mode_settings.get("mode", "rag"),
+                primary_answer=content,
+                retrieval_info={
+                    "sources": result.get("sources", []),
+                    "entities": result.get("entities", {}),      # contains entityids/relationshipids
+                    "nodedetails": result.get("nodedetails", {}),
+                },
+                llm=llm,                       # small deterministic model recommended
+                question=question,
+                standalone_question=standalone_question,
+            )
+            if followup_text:
+                logging.info(
+                    f"[Proactive][Chat] followup_emitted session={session_id} "
+                    f"len={len(followup_text)} "
+                    f"preview='{followup_text.splitlines()[0][:120]}'"
+                )
+            else:
+                logging.info(
+                    f"[Proactive][Chat] followup_skipped_or_empty session={session_id}"
+                )
+        except Exception as e:
+            logging.error(f"[Proactive] Error in maybe_trigger_proactive_followup (chat): {e}")
+            followup_text = None
+
+        # 7️⃣ Optional async summarization
         summarization_thread = threading.Thread(target=summarize_and_log, args=(history, messages, llm))
         summarization_thread.start()
         logging.info("Summarization thread started.")
@@ -634,7 +705,8 @@ def process_chat_response(messages, history, question, model, graph, document_na
 
         return {
             "session_id": session_id,
-            "message": content,
+            "message": content,                # bubble #1
+            "followup_message": followup_text, # bubble #2 (or None)
             "info": {
                 "sources": result["sources"],
                 "model": model_version,
@@ -666,6 +738,7 @@ def process_chat_response(messages, history, question, model, graph, document_na
             },
             "user": "chatbot",
         }
+
 
 # Prosess chat history summarization in a separate thread 
 # TODO: Edit function to use better history summarization approach

@@ -1,6 +1,8 @@
 # src/history_graph.py
 import logging
+import json
 from typing import List, Optional
+
 
 def _run_query(graph, cypher: str, params: dict, access: str = "READ"):
     """
@@ -37,13 +39,20 @@ def ensure_constraints(graph):
         "CREATE INDEX response_createdAt IF NOT EXISTS FOR (r:Response) ON (r.createdAt)"
     ]
     for c in cyphers:
-        graph.query(c)
+        _run_query(graph, c, {}, access="WRITE")
+
 
 def clear_history_graph(graph, session_id: str) -> None:
-    _run_query(graph, """
-    MATCH (s:Session {id:$sessionId})-[:HAS_RESPONSE]->(r)
-    DETACH DELETE r
-    """, {"sessionId": session_id}, "WRITE")
+    _run_query(
+        graph,
+        """
+        MATCH (s:Session {id:$sessionId})-[:HAS_RESPONSE]->(r)
+        DETACH DELETE r
+        """,
+        {"sessionId": session_id},
+        "WRITE",
+    )
+
 
 def get_history_graph(graph, session_id: str, limit: int = 5):
     """
@@ -63,6 +72,8 @@ def get_history_graph(graph, session_id: str, limit: int = 5):
         r.output AS output,
         r.cypher AS cypher,
         r.createdAt AS createdAt,
+        r.type AS type,
+        r.proactiveReason AS proactiveReason,
         [ (r)-[:CONTEXT]->(n) | elementId(n) ] AS context
     """
     return _run_query(graph, cypher, {"sessionId": session_id}, "READ")
@@ -77,7 +88,20 @@ def save_history_graph(
     output_text: str,
     ids: list[str] | None,
     cypher: str | None = None,
+    response_type: str = "answer",
+    proactive_reason: str | None = None,
+    trigger_meta: dict | None = None,
 ) -> str:
+    """
+    Persist one turn in the history graph as a Response node.
+
+    response_type: "answer" | "followup" | etc
+    proactive_reason: short string, e.g. "first_message_welcome", "clarify_entity"
+    trigger_meta: arbitrary JSON-ish dict (for telemetry) -> stored as JSON string
+    """
+    # 🔑 Penting: serialize trigger_meta ke JSON string supaya tidak Map{} di Neo4j
+    trigger_meta_str = json.dumps(trigger_meta or {})
+
     params = {
         "session_id": session_id,
         "source": source,
@@ -86,9 +110,13 @@ def save_history_graph(
         "output": output_text,
         "ids": ids or [],
         "cypher": cypher,
+        "response_type": response_type,
+        "proactive_reason": proactive_reason,
+        "trigger_meta": trigger_meta_str,
     }
 
-    res = graph.query(
+    res = _run_query(
+        graph,
         """
         MERGE (s:Session { id: $session_id })
 
@@ -100,7 +128,10 @@ def save_history_graph(
           output: $output,
           rephrasedQuestion: $rephrased,
           cypher: $cypher,
-          ids: $ids
+          ids: $ids,
+          type: $response_type,
+          proactiveReason: $proactive_reason,
+          triggerMeta: $trigger_meta
         })
         MERGE (s)-[:HAS_RESPONSE]->(r)
 
@@ -121,6 +152,7 @@ def save_history_graph(
 
         RETURN r.id AS id
         """,
-        params,   # ← params dict, tidak ada argumen ketiga
+        params,
+        access="WRITE",
     )
     return res[0]["id"] if res else ""
