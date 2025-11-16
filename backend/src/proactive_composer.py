@@ -1,43 +1,25 @@
-# src/proactive_composer.py
+from typing import Dict, Any, List, Optional
 import json
 import logging
-from typing import Dict, Any, List, Optional
 
-from langchain.schema import HumanMessage, SystemMessage
+from langchain.schema import SystemMessage, HumanMessage
 
 
 def detect_language_simple(question: str, primary_answer: str) -> str:
     """
-    Heuristik sederhana untuk mendeteksi bahasa utama (id / en / other)
-    tanpa menambah dependency eksternal.
-
-    - Hitung beberapa kata kunci umum Indonesia vs Inggris.
-    - Kalau skor Indonesia > Inggris → "id"
-    - Kalau skor Inggris > Indonesia → "en"
-    - Kalau imbang / sangat sedikit → "other" (biarkan LLM memutuskan,
-      tapi tetap diarahkan ke bahasa pertanyaan).
+    Heuristic sangat sederhana untuk deteksi bahasa user.
+    Kalau kamu sudah punya versi lain, boleh pakai yang itu, fungsi ini hanya fallback.
     """
-    text = f"{question} {primary_answer}".lower()
+    text = (question or "") + " " + (primary_answer or "")
+    text_lower = text.lower()
 
-    id_keywords = [
-        "apa", "yang", "kenapa", "bagaimana", "dimana", "kapan",
-        "saya", "kamu", "anda", "tidak", "bisa", "dengan", "untuk",
-        "dalam", "kalau", "jadi", "karena", "dan", "atau", "jika",
-    ]
-    en_keywords = [
-        "what", "why", "how", "where", "when", "which",
-        "i ", "you ", "can ", "cannot", "can't", "should",
-        "would", "could", "please", "help", "about", "the ",
-    ]
-
-    id_score = sum(text.count(k) for k in id_keywords)
-    en_score = sum(text.count(k) for k in en_keywords)
-
-    if id_score > en_score:
+    # Heuristik kasar: cari kata-kata Indonesia
+    id_markers = ["apa", "bagaimana", "mengapa", "tolong", "saya", "kamu", "tidak", "bisa", "yang"]
+    if any(m in text_lower for m in id_markers):
         return "id"
-    if en_score > id_score:
-        return "en"
-    return "other"
+
+    # Default English
+    return "en"
 
 
 def compose_followup_message_v1(
@@ -47,7 +29,9 @@ def compose_followup_message_v1(
     primary_answer: str,
     reason: str,
     candidate_entities: List[Dict[str, Any]],
+    graph_entities: Optional[Dict[str, Any]],
     mode: str,
+    admin_rule: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """
     Use an LLM (preferably a BIG model, e.g. gpt-4o) to generate bubble #2 text.
@@ -75,8 +59,8 @@ def compose_followup_message_v1(
         user_language,
     )
 
-    # Jelaskan bahasa dengan jelas ke LLM
-    language_instruction = {
+    # Instruksi bahasa yang jelas ke LLM
+    language_instruction_map = {
         "id": (
             "The user is interacting in Indonesian. "
             "You MUST reply strictly in natural, conversational Indonesian. "
@@ -87,44 +71,73 @@ def compose_followup_message_v1(
             "You MUST reply strictly in natural, conversational English. "
             "Do NOT use any other language."
         ),
-        "other": (
+    }
+    language_instruction = language_instruction_map.get(
+        user_language,
+        (
             "You MUST infer the user's language from the question, "
             "then reply strictly in that same language. "
             "Do NOT use any other language."
         ),
-    }[user_language]
-
-    system_msg = SystemMessage(
-        content=(
-            "You are composing a SECOND chat bubble for a knowledge-graph powered assistant called Privas AI.\n"
-            "This bubble is a proactive follow-up, not the main answer.\n"
-            "You MUST NOT re-answer the main question.\n"
-            "You MUST NOT apologize.\n"
-            "You MUST NOT repeat the main answer.\n"
-            f"{language_instruction}\n\n"
-            "Focus only on:\n"
-            "- Clarifying ambiguous entities.\n"
-            "- Offering helpful graph-based navigation or insights.\n"
-            "- Gently proposing next steps.\n\n"
-            "Tone:\n"
-            "- Warm, professional, and concise.\n"
-            "- Feels premium, like a smart assistant that understands the user's context.\n\n"
-            "Output requirements:\n"
-            "- First, 1 short intro line (1–2 sentences max).\n"
-            "- Then 2–3 bullet points, each starting with '- '.\n"
-            "- No extra JSON, no metadata, only user-facing text.\n"
-        )
     )
 
-    payload = {
+    admin_hint = ""
+    if admin_rule and admin_rule.get("id") == "ask_email_if_missing":
+        admin_hint = admin_rule.get("llm_instruction", "")
+
+    if admin_rule:
+        logging.info(
+            "[Proactive][Composer] admin_rule_applied id=%s name=%s",
+            admin_rule.get("id"),
+            admin_rule.get("name"),
+        )
+    else:
+        logging.debug("[Proactive][Composer] no_admin_rule -> default proactive behavior")
+
+    # 🔧 Build system prompt as pure string, then bungkus SystemMessage
+    system_content = (
+        "You are composing a SECOND chat bubble for a knowledge-graph powered assistant called Privas AI.\n"
+        "This bubble is a proactive follow-up, not the main answer.\n"
+        "You MUST NOT re-answer the main question.\n"
+        "You MUST NOT apologize.\n"
+        "You MUST NOT repeat the main answer.\n"
+        f"{language_instruction}\n\n"
+        "Focus only on:\n"
+        "- Clarifying ambiguous entities.\n"
+        "- Offering helpful graph-based navigation or insights.\n"
+        "- Gently proposing next steps.\n\n"
+        "Tone:\n"
+        "- Warm, professional, and concise.\n"
+        "- Feels premium, like a smart assistant that understands the user's context.\n\n"
+        "Output requirements:\n"
+        "- First, 1 short intro line (1–2 sentences max).\n"
+        "- Then 2–3 bullet points, each starting with '- '.\n"
+        "- No extra JSON, no metadata, only user-facing text.\n"
+    )
+
+    if admin_hint:
+        system_content += (
+            "\n\nAdditional instruction based on admin rule:\n"
+            f"{admin_hint}\n"
+            "You MUST respect the intent of this admin rule while staying natural.\n"
+        )
+
+    system_msg = SystemMessage(content=system_content)
+
+    payload: Dict[str, Any] = {
         "reason": reason,
         "mode": mode,
         "user_language": user_language,
         "user_question": question,
         "standalone_question": standalone_question,
         "primary_answer_preview": primary_answer[:400],
-        "entities": candidate_entities,
+        "entities": candidate_entities or [],
     }
+
+    # Optional: kirim admin_rule id ke LLM sebagai hint
+    if admin_rule:
+        payload["admin_rule_id"] = admin_rule.get("id")
+        payload["admin_rule_name"] = admin_rule.get("name")
 
     user_msg = HumanMessage(content=json.dumps(payload, ensure_ascii=False))
 

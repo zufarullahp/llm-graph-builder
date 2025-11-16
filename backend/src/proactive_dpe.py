@@ -98,8 +98,14 @@ def evaluate_proactive_decision_v1(
             "- Do NOT attempt to answer the user question. Only decide whether to send a second proactive bubble.\n"
             "- Do NOT wrap the JSON in markdown code fences.\n"
             "- Do NOT add explanation outside the JSON object.\n"
+            "- If admin_rule_candidate is present, you may choose decision=\"ALLOW\" "
+            "  when cooldown is satisfied and the rule seems reasonable for this context.\n"
         )
     )
+
+    admin_rule_candidate = retrieval_info.get("admin_rule_candidate")
+
+
 
     user_payload = {
         "turn_count": turn_count,
@@ -110,6 +116,7 @@ def evaluate_proactive_decision_v1(
         "question": question,
         "standalone_question": standalone_question,
         "primary_answer_preview": primary_answer[:400],
+        "admin_rule_candidate": admin_rule_candidate,
     }
 
     user_msg = HumanMessage(content=json.dumps(user_payload, ensure_ascii=False))

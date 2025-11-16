@@ -43,6 +43,9 @@ from src.proactive_controller import (
     maybe_trigger_proactive_followup,
 )
 
+from src.natural_intent import detect_natural_intent, classify_intent_with_llm
+from src.nid_handlers import store_pending_contact, get_and_clear_pending_contact, persist_contact
+
 
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 EMBEDDING_FUNCTION , _ = load_embedding_model(EMBEDDING_MODEL) 
@@ -575,11 +578,222 @@ def process_chat_response(messages, history, question, model, graph, document_na
         except Exception as e:
             logging.error(f"Failed to register user turn (chat) for {session_id}: {e}")
 
+        # --- Natural Intent Detection (v1 rule-based) -----------------
+        try:
+            nid = detect_natural_intent(question, session_id=session_id)
+            logging.debug(f"[NID] result={nid}")
+            # If detector says no retrieval required, handle immediately with a small reply
+            if nid.get("intent") != "unknown" and not nid.get("requires_retrieval", False):
+                intent = nid.get("intent")
+                slots = nid.get("slots") or {}
+
+                # Simple language heuristic for response scaffolding
+                qtl = (question or "").lower()
+                is_id = any(x in qtl for x in ["saya", "apa", "tolong", "terima", "gimana"]) 
+
+                # Build canned replies per intent (keeps NID pure-text and no persistence)
+                reply = None
+                if intent == "contact_sharing":
+                    if slots.get("email"):
+                        # persist pending contact for consent
+                        try:
+                            store_pending_contact(graph, session_id, slots)
+                        except Exception:
+                            logging.exception("Failed to store pending contact")
+                        reply = (
+                            "Terima kasih — saya menerima email Anda. "
+                            "Apakah saya boleh menyimpannya ke profil Anda? (ya/tidak)"
+                            if is_id
+                            else "Thanks — I received your email. Do you want me to save it to your profile? (yes/no)"
+                        )
+                    elif slots.get("phone"):
+                        try:
+                            store_pending_contact(graph, session_id, slots)
+                        except Exception:
+                            logging.exception("Failed to store pending contact")
+                        reply = (
+                            "Terima kasih — saya menerima nomor telepon Anda. "
+                            "Apakah saya boleh menyimpannya? (ya/tidak)"
+                            if is_id
+                            else "Thanks — I received your phone number. Do you want me to save it? (yes/no)"
+                        )
+                    elif slots.get("name"):
+                        name = slots.get("name")
+                        reply = (f"Salam, {name}!" if is_id else f"Nice to meet you, {name}!")
+                    else:
+                        reply = ("Terima kasih — kontak dicatat." if is_id else "Thanks — noted your contact details.")
+                elif intent == "affirmative":
+                    # Check pending contact and persist if present
+                    try:
+                        pending = get_and_clear_pending_contact(graph, session_id)
+                        if pending:
+                            resp_id = persist_contact(graph, session_id, pending)
+                            if resp_id:
+                                reply = ("Kontak Anda telah disimpan." if is_id else "Your contact has been saved.")
+                            else:
+                                reply = ("Gagal menyimpan kontak — coba lagi." if is_id else "Failed to save contact — please try again.")
+                        else:
+                            # nothing pending — general affirmative
+                            reply = ("Baik." if is_id else "Okay.")
+                    except Exception as e:
+                        logging.exception(f"Error handling affirmative for session={session_id}: {e}")
+                        reply = ("Baik." if is_id else "Okay.")
+
+                elif intent == "small_talk":
+                    reply = ("Sama-sama!" if is_id else "You're welcome!")
+
+                elif intent == "greeting_closing":
+                    reply = ("Halo! Apa yang bisa saya bantu?" if is_id else "Hi — how can I help?")
+
+                elif intent == "no_content":
+                    reply = ("Sepertinya pesan kosong — bisa ketik lagi?" if is_id else "I didn't get any message — could you rephrase?")
+
+                elif intent == "upload_attachment":
+                    reply = ("Terima kasih, file diterima. Saya akan memprosesnya." if is_id else "Thanks — I received the file. I'll process it.")
+
+                elif intent == "task_meta":
+                    reply = ("Perintah diterima — saya akan menjalankan tindakan terkait." if is_id else "Command received — I'll perform that action.")
+
+                elif intent == "clarification":
+                    reply = ("Boleh saya jelaskan lebih sederhana — apakah Anda ingin contoh?" if is_id else "Sure — do you want an example or a simpler explanation?")
+
+                elif intent == "feedback":
+                    reply = ("Terima kasih atas masukannya — ingin saya perbaiki jawabannya sekarang?" if is_id else "Thanks for the feedback — would you like me to re-answer now?")
+
+                elif intent == "personal_context":
+                    reply = ("Terima kasih sudah berbagi konteks — saya catat untuk percakapan ini." if is_id else "Thanks for sharing — I'll keep that context for this conversation.")
+
+                elif intent == "non_retrieval_inquiry":
+                    reply = ("Saya bisa membantu menjawab hal-hal umum tentang layanan — apa yang ingin Anda tahu?" if is_id else "I can answer questions about the service — what would you like to know?")
+
+                elif intent == "explicit_proactive_intent":
+                    reply = ("Baik — saya akan memberikan langkah selanjutnya berdasarkan konteks saat ini." if is_id else "Got it — I'll suggest next steps based on the current context.")
+
+                # If we have a canned reply, short-circuit the pipeline and return it
+                if reply is not None:
+                    return {
+                        "session_id": session_id,
+                        "message": reply,
+                        "followup_message": None,
+                        "info": {
+                            "sources": [],
+                            "model": None,
+                            "nodedetails": {},
+                            "total_tokens": 0,
+                            "response_time": 0,
+                            "mode": None,
+                            "entities": {},
+                            "metric_details": {"nid": nid},
+                        },
+                        "user": "chatbot",
+                    }
+        except Exception as e:
+            logging.exception(f"Natural intent detection error: {e}")
+        # ---------------------------------------------------------------
+
         llm, doc_retriever, model_version = setup_chat(model, graph, document_names, chat_mode_settings)
         logging.debug(
             f"Chat LLM and document retriever initialized: version={model_version} mode={chat_mode_settings.get('mode')}"
             f"[Proactive][Chat] setup_chat done session={session_id} "
         )
+
+        # --- Secondary NID: LLM-based classification when rule-based fell through ---
+        try:
+            # If rule-based left nid undefined or marked for retrieval, ask the LLM classifier
+            llm_nid = classify_intent_with_llm(llm, question, session_id=session_id)
+            logging.debug(f"[NID][LLM] result={llm_nid}")
+            # If LLM decides this is a meta-intent (no retrieval) and it's confident,
+            # handle it via the same canned reply paths as rule-based.
+            if llm_nid and llm_nid.get("intent") != "unknown" and not llm_nid.get("requires_retrieval", False):
+                intent = llm_nid.get("intent")
+                slots = llm_nid.get("slots") or {}
+                qtl = (question or "").lower()
+                is_id = any(x in qtl for x in ["saya", "apa", "tolong", "terima", "gimana"]) 
+
+                reply = None
+                if intent == "contact_sharing":
+                    if slots.get("email"):
+                        try:
+                            store_pending_contact(graph, session_id, slots)
+                        except Exception:
+                            logging.exception("Failed to store pending contact")
+                        reply = (
+                            "Terima kasih — saya menerima email Anda. "
+                            "Apakah saya boleh menyimpannya ke profil Anda? (ya/tidak)"
+                            if is_id
+                            else "Thanks — I received your email. Do you want me to save it to your profile? (yes/no)"
+                        )
+                    elif slots.get("phone"):
+                        try:
+                            store_pending_contact(graph, session_id, slots)
+                        except Exception:
+                            logging.exception("Failed to store pending contact")
+                        reply = (
+                            "Terima kasih — saya menerima nomor telepon Anda. "
+                            "Apakah saya boleh menyimpannya? (ya/tidak)"
+                            if is_id
+                            else "Thanks — I received your phone number. Do you want me to save it? (yes/no)"
+                        )
+                    elif slots.get("name"):
+                        name = slots.get("name")
+                        reply = (f"Salam, {name}!" if is_id else f"Nice to meet you, {name}!")
+                    else:
+                        reply = ("Terima kasih — kontak dicatat." if is_id else "Thanks — noted your contact details.")
+                elif intent == "affirmative":
+                    try:
+                        pending = get_and_clear_pending_contact(graph, session_id)
+                        if pending:
+                            resp_id = persist_contact(graph, session_id, pending)
+                            if resp_id:
+                                reply = ("Kontak Anda telah disimpan." if is_id else "Your contact has been saved.")
+                            else:
+                                reply = ("Gagal menyimpan kontak — coba lagi." if is_id else "Failed to save contact — please try again.")
+                        else:
+                            reply = ("Baik." if is_id else "Okay.")
+                    except Exception as e:
+                        logging.exception(f"Error handling affirmative for session={session_id}: {e}")
+                        reply = ("Baik." if is_id else "Okay.")
+                elif intent == "small_talk":
+                    reply = ("Sama-sama!" if is_id else "You're welcome!")
+                elif intent == "greeting_closing":
+                    reply = ("Halo! Apa yang bisa saya bantu?" if is_id else "Hi — how can I help?")
+                elif intent == "no_content":
+                    reply = ("Sepertinya pesan kosong — bisa ketik lagi?" if is_id else "I didn't get any message — could you rephrase?")
+                elif intent == "upload_attachment":
+                    reply = ("Terima kasih, file diterima. Saya akan memprosesnya." if is_id else "Thanks — I received the file. I'll process it.")
+                elif intent == "task_meta":
+                    reply = ("Perintah diterima — saya akan menjalankan tindakan terkait." if is_id else "Command received — I'll perform that action.")
+                elif intent == "clarification":
+                    reply = ("Boleh saya jelaskan lebih sederhana — apakah Anda ingin contoh?" if is_id else "Sure — do you want an example or a simpler explanation?")
+                elif intent == "feedback":
+                    reply = ("Terima kasih atas masukannya — ingin saya perbaiki jawabannya sekarang?" if is_id else "Thanks for the feedback — would you like me to re-answer now?")
+                elif intent == "personal_context":
+                    reply = ("Terima kasih sudah berbagi konteks — saya catat untuk percakapan ini." if is_id else "Thanks for sharing — I'll keep that context for this conversation.")
+                elif intent == "non_retrieval_inquiry":
+                    reply = ("Saya bisa membantu menjawab hal-hal umum tentang layanan — apa yang ingin Anda tahu?" if is_id else "I can answer questions about the service — what would you like to know?")
+                elif intent == "explicit_proactive_intent":
+                    reply = ("Baik — saya akan memberikan langkah selanjutnya berdasarkan konteks saat ini." if is_id else "Got it — I'll suggest next steps based on the current context.")
+
+                if reply is not None:
+                    return {
+                        "session_id": session_id,
+                        "message": reply,
+                        "followup_message": None,
+                        "info": {
+                            "sources": [],
+                            "model": model_version,
+                            "nodedetails": {},
+                            "total_tokens": 0,
+                            "response_time": 0,
+                            "mode": None,
+                            "entities": {},
+                            "metric_details": {"nid": {**(nid or {}), **(llm_nid or {})}},
+                        },
+                        "user": "chatbot",
+                    }
+        except Exception as e:
+            logging.exception(f"LLM NID error: {e}")
+        # ------------------------------------------------------------------
 
         # 1️⃣ Rephrase latest question using history_graph
         standalone_question, history_rows = rephrase_with_history_graph(
@@ -668,6 +882,7 @@ def process_chat_response(messages, history, question, model, graph, document_na
                 f"[Proactive][Chat] maybe_trigger_proactive_followup call "
                 f"session={session_id} mode={chat_mode_settings.get('mode', 'rag')}"
             )
+            final_nid = llm_nid if 'llm_nid' in locals() and llm_nid else nid
             followup_text = maybe_trigger_proactive_followup(
                 graph=graph,
                 session_id=session_id,
@@ -677,6 +892,7 @@ def process_chat_response(messages, history, question, model, graph, document_na
                     "sources": result.get("sources", []),
                     "entities": result.get("entities", {}),      # contains entityids/relationshipids
                     "nodedetails": result.get("nodedetails", {}),
+                    "nid": final_nid,
                 },
                 llm=llm,                       # small deterministic model recommended
                 question=question,
@@ -688,6 +904,12 @@ def process_chat_response(messages, history, question, model, graph, document_na
                     f"len={len(followup_text)} "
                     f"preview='{followup_text.splitlines()[0][:120]}'"
                 )
+                # Also append follow-up bubble to the local LangChain history so
+                # subsequent prompts and the UI can see the follow-up immediately.
+                try:
+                    messages.append(AIMessage(content=followup_text))
+                except Exception as _e:
+                    logging.error(f"Failed to append proactive follow-up to messages for session {session_id}: {_e}")
             else:
                 logging.info(
                     f"[Proactive][Chat] followup_skipped_or_empty session={session_id}"
