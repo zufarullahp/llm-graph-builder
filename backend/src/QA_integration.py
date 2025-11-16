@@ -45,6 +45,7 @@ from src.proactive_controller import (
 
 from src.natural_intent import detect_natural_intent, classify_intent_with_llm
 from src.nid_handlers import store_pending_contact, get_and_clear_pending_contact, persist_contact
+from src.proactive_action_router import route_meta_turn
 
 
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
@@ -669,8 +670,16 @@ def process_chat_response(messages, history, question, model, graph, document_na
                 elif intent == "explicit_proactive_intent":
                     reply = ("Baik — saya akan memberikan langkah selanjutnya berdasarkan konteks saat ini." if is_id else "Got it — I'll suggest next steps based on the current context.")
 
-                # If we have a canned reply, short-circuit the pipeline and return it
+                # If we have a canned reply, route meta-turn to the action router
                 if reply is not None:
+                    try:
+                        router_result = route_meta_turn(graph, session_id, nid, session_state)
+                        # Use any message override returned by the router (action handlers may craft a different reply)
+                        if isinstance(router_result, dict) and router_result.get("message_override"):
+                            reply = router_result.get("message_override")
+                    except Exception as _e:
+                        logging.exception(f"Error routing meta-turn to action router: {_e}")
+
                     return {
                         "session_id": session_id,
                         "message": reply,
@@ -683,7 +692,7 @@ def process_chat_response(messages, history, question, model, graph, document_na
                             "response_time": 0,
                             "mode": None,
                             "entities": {},
-                            "metric_details": {"nid": nid},
+                            "metric_details": {"nid": nid, "router": router_result if 'router_result' in locals() else None},
                         },
                         "user": "chatbot",
                     }
@@ -775,6 +784,14 @@ def process_chat_response(messages, history, question, model, graph, document_na
                     reply = ("Baik — saya akan memberikan langkah selanjutnya berdasarkan konteks saat ini." if is_id else "Got it — I'll suggest next steps based on the current context.")
 
                 if reply is not None:
+                    try:
+                        final_nid_for_router = {**(nid or {}), **(llm_nid or {})}
+                        router_result = route_meta_turn(graph, session_id, final_nid_for_router, session_state)
+                        if isinstance(router_result, dict) and router_result.get("message_override"):
+                            reply = router_result.get("message_override")
+                    except Exception as _e:
+                        logging.exception(f"Error routing meta-turn to action router (LLM NID): {_e}")
+
                     return {
                         "session_id": session_id,
                         "message": reply,
@@ -787,7 +804,7 @@ def process_chat_response(messages, history, question, model, graph, document_na
                             "response_time": 0,
                             "mode": None,
                             "entities": {},
-                            "metric_details": {"nid": {**(nid or {}), **(llm_nid or {})}},
+                            "metric_details": {"nid": {**(nid or {}), **(llm_nid or {})}, "router": router_result if 'router_result' in locals() else None},
                         },
                         "user": "chatbot",
                     }
@@ -880,13 +897,13 @@ def process_chat_response(messages, history, question, model, graph, document_na
         try:
             logging.debug(
                 f"[Proactive][Chat] maybe_trigger_proactive_followup call "
-                f"session={session_id} mode={chat_mode_settings.get('mode', 'rag')}"
+                f"session={session_id} mode={chat_mode_settings.get('mode', 'graph_vector_fulltext')}"
             )
             final_nid = llm_nid if 'llm_nid' in locals() and llm_nid else nid
             followup_text = maybe_trigger_proactive_followup(
                 graph=graph,
                 session_id=session_id,
-                mode=chat_mode_settings.get("mode", "rag"),
+                mode=chat_mode_settings.get("mode", "graph_vector_fulltext"),
                 primary_answer=content,
                 retrieval_info={
                     "sources": result.get("sources", []),

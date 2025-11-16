@@ -1,71 +1,155 @@
-# Project Overview
-Welcome to our project! This project is built using FastAPI framework to create a fast and modern API with Python.
+Backend README
+===============
 
-## Feature
-API Endpoint : This project provides various API endpoint to perform specific tasks.
-Data Validation : Utilize FastAPI data validation and serialization feature.
-Interactive Documentation : Access Swagger UI and ReDoc for interactive API documentation.
+This README covers local developer guidance for the backend, testing, and the proactive action components (RuleInstance, Action Router, meta-turn handling).
 
-## Getting Started 
+Running tests locally
+---------------------
 
-Follow these steps to set up and run the project locally:
+From the project root you can run the backend test suite like this (PowerShell):
 
-1. Clone the Repository:
+```powershell
+cd backend
+pytest -q
+```
 
-> git clone https://github.com/neo4j-labs/llm-graph-builder.git
+You do not need to set PYTHONPATH manually; `tests/conftest.py` inserts the `backend/` directory onto `sys.path` when pytest runs.
 
-> cd llm-graph-builder
+Why `pytest.ini` and `conftest.py` exist
+--------------------------------------
+- `pytest.ini`: basic pytest configuration (test discovery & options).
+- `tests/conftest.py`: test-time setup. It ensures the `backend/` directory is on `sys.path`, and exposes fixtures like `fake_graph` used by unit tests.
 
-2. Install Dependency :
+FakeGraph test utility
+----------------------
+- Location: `backend/test_utils/fake_graph.py`
+- Purpose: a lightweight in-memory implementation of the small subset of Neo4j operations the tests perform.
+- Supported operations:
+  - store/read/clear `Session.pending_contact`
+  - persist `Response` nodes (via `save_history_graph` interactions)
+  - create / list / update `RuleInstance` nodes
+  - attach `Session.email`
+  - create a `Job` stub node
+- Tests should use the `fake_graph` pytest fixture (provided in `tests/conftest.py`) which returns a fresh FakeGraph per test.
 
-> pip install -t requirements.txt
+Environment variables
+---------------------
+- ENABLE_PROACTIVE_ACTIONS: when set to `true`/`1`/`yes` the Action Layer handlers (e.g., storing emails, creating Job stubs) are enabled. Tests set this during execution where necessary.
 
-## Run backend project using unicorn
-Run the server:
-> uvicorn score:app --reload
+Proactive components: RuleInstance, Action Router, and meta-turn handling
+-------------------------------------------------------------------------
 
-## Run project using docker
-## prerequisite 
-Before proceeding, ensure the following software is installed on your machine
+1) RuleInstance
 
-Docker: https://www.docker.com/
+- Purpose: represent a pending admin-driven follow-up that expects a user meta-turn. Typical lifecycle:
+  - CREATED / WAITING (after a proactive follow-up was emitted and persisted)
+  - PENDING (optional intermediate state)
+  - COMPLETED (when the required action has been executed)
 
-1. Build the docker image
-   > docker build -t your_image_name .
-   
-   Replace `your_image_name` with the meaningful name for your Docker image
+- Storage: a `RuleInstance` node is persisted in the graph and linked to the `Session`.
 
-2. Run the Docker Container
-   > docker run -it -p 8000:8000 your_image_name
-   
-   Replace `8000` with the desired port.
+Key helpers: `src/rule_instance.py`
 
-## Access the API Documentation
-Open your browser and navigate to
-http://127.0.0.1:8000/docs for Swagger UI or
-http://127.0.0.1:8000/redocs for ReDoc.
+2) Action Router
 
-## Project Structure
-`score.py`: Score entry point for FastAPI application
+- Purpose: when the NID (Natural Intent Detector) marks a user message as a meta-turn (contact sharing, affirmative, etc.), the Action Router finds active RuleInstance(s) for the session and maps `(rule_id, nid.intent)` to the correct action handler.
 
-## Configuration
+- Example mapping: `ask_email_if_missing` + `contact_sharing(email)` -> `store_email_and_notify`
 
-Update the environment variable in `.env` file. Refer example.env in backend folder for more config.
+Key file: `src/proactive_action_router.py`
 
-`OPENAI_API_KEY`: Open AI key to use incase of openai embeddings
+3) Action Layer
 
-`EMBEDDING_MODEL` : "all-MiniLM-L6-v2" or "openai" or "vertexai"
+- Action handlers implement side-effects required by admin rules (persisting contact, creating a Job stub, updating the Session node, and marking RuleInstance COMPLETED).
 
-`NEO4J_URI` : Neo4j URL
+- They are gated by `ENABLE_PROACTIVE_ACTIONS` for safe rollout/testing.
 
-`NEO4J_USERNAME` : Neo4J database username
+Key file: `src/proactive_actions.py`
 
-`NEO4J_PASSWORD` : Neo4j database user password
+4) Meta-turn flow (high-level)
 
-`AWS_ACCESS_KEY_ID` : AWS Access key ID
+- NID (rule-based, with LLM fallback) runs early in the chat handling path.
+- If the NID indicates a meta-intent that does NOT require retrieval (e.g., contact_sharing or affirmative), the QA pipeline routes the turn to the Action Router before returning a canned reply.
+- The router executes the mapped action handler, which may persist a contact, update RuleInstance status, create a Job stub, and return a `message_override` that the pipeline uses instead of the canned reply.
 
-`AWS_SECRET_ACCESS_KEY` : AWS secret access key
+Examples and diagrams
+---------------------
+
+1) NID output example (JSON)
+
+```json
+{
+  "intent": "contact_sharing",
+  "confidence": 0.95,
+  "slots": { "email": "user@example.com" },
+  "requires_retrieval": false,
+  "handler_name": "handle_contact_sharing"
+}
+```
+
+2) Meta-turn flow (sequence)
+
+User initiates chat -> System answers (RAG) -> Composer emits follow-up (persisted as Response:type=followup) -> RuleInstance created (WAITING)
+User replies with meta-turn (e.g., shares email) -> NID detects meta-intent -> QA pipeline calls Action Router -> Action handler persists contact, creates Job stub, updates RuleInstance to COMPLETED -> Pipeline returns message_override to user.
+
+3) Mermaid sequence diagram
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant S as System (RAG)
+    participant DB as GraphDB
+    participant AR as ActionRouter
+    participant AH as ActionHandler
+
+    U->>S: Ask question
+    S-->>DB: save Response (answer)
+    S->>S: maybe_trigger_proactive_followup()
+    S-->>DB: save Response (followup)
+    S-->>DB: create RuleInstance (WAITING)
+    U->>S: "My email is me@example.com"
+    S->>S: detect_natural_intent() -> contact_sharing
+    S->>AR: route_meta_turn(nid, session)
+    AR->>AH: store_email_and_notify()
+    AH-->>DB: persist contact Response, set Session.email, create Job
+    AH-->>DB: update RuleInstance (COMPLETED)
+    AH-->>S: message_override
+    S-->>U: message_override
+```
+
+4) RuleInstance lifecycle (example state transitions)
+
+- CREATED (when follow-up persisted)
+- WAITING (session waits for user meta-turn)
+- PENDING (optional intermediate state)
+- COMPLETED (action executed successfully)
+
+Tips & examples
+---------------
+- To run a single test file quickly:
+
+```powershell
+cd backend
+pytest tests/test_action_router_and_flow.py -q
+```
+
++- To enable the Action Layer in a local run, set the env var before running tests or starting the app:
+
+```powershell
+$env:ENABLE_PROACTIVE_ACTIONS = "true"
+pytest -q
+```
 
 
-## Contact
-For questions or support, feel free to contact us at christopher.crosbie@neo4j.com or michael.hunger@neo4j.com
+CI (GitHub Actions)
+---------------------
+- Workflow: `.github/workflows/ci.yml` runs tests on push and PRs. It installs dependencies from `requirements.txt`, runs pytest, and uploads test artifacts.
+
+Questions or next steps
+-----------------------
+- Want CI to run coverage and test a Python matrix (3.9/3.10/3.11)? I can add coverage reporting and expand the workflow.
+- Should we extract FakeGraph into a small test package (e.g., `tests/utils`) with more realistic behavior (temporal types, elementId matching)? I can do that next.
+
+Contact
+-------
+For questions about the proactive design or to propose additional admin rule mappings, open an issue or ping the team.

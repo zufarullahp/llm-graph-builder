@@ -8,6 +8,7 @@ from src.proactive_composer import compose_followup_message_v1
 from src.proactive_entity_inspector import inspect_entities_in_graph
 from src.history_graph import save_history_graph, _run_query
 from src.proactive_admin_rules import load_proactive_rules_for_tenant, evaluate_admin_rules
+from src.rule_instance import create_rule_instance
 
 TURN_COOLDOWN_TURNS = 3       # spec: min 3 turns
 TIME_COOLDOWN_SECONDS = 30    # spec: 30–60s, we start with 30s
@@ -471,6 +472,15 @@ def maybe_trigger_proactive_followup(
                 "admin_rule_id": admin_rule.get("id") if admin_rule else None,
             },
         )
+
+        # If an admin_rule triggered this follow-up, create a per-session RuleInstance
+        try:
+            if admin_rule and admin_rule.get("id"):
+                # use current turn count as asked_at_turn
+                asked_turn = state.get("turnCount") if isinstance(state, dict) else None
+                create_rule_instance(graph, session_id, admin_rule.get("id"), asked_at_turn=asked_turn or 0, metadata={"proactive_reason": reason})
+        except Exception:
+            pass
 
         register_proactive_emission(graph, session_id)
 

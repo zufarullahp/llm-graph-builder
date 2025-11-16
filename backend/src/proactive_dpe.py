@@ -105,6 +105,19 @@ def evaluate_proactive_decision_v1(
 
     admin_rule_candidate = retrieval_info.get("admin_rule_candidate")
 
+    # DPE-level guard: if the admin rule is ask_email_if_missing but
+    # the session already has an email, skip proposing this rule.
+    try:
+        if admin_rule_candidate and isinstance(admin_rule_candidate, dict):
+            rid = admin_rule_candidate.get("rule_id") or admin_rule_candidate.get("id") or admin_rule_candidate.get("rule")
+            if rid == "ask_email_if_missing":
+                # session_state may contain session fields like 'email'
+                if session_state.get("email"):
+                    logging.info("[Proactive][DPE] skipping ask_email_if_missing because session already has email")
+                    return False, "email_already_present", {"turnCount": turn_count, "reason": "email_already_present"}, top_entities
+    except Exception:
+        logging.exception("Error evaluating admin_rule_candidate guard in DPE")
+
 
 
     user_payload = {

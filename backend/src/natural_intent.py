@@ -38,6 +38,16 @@ def _contains_any(text: str, phrases: List[str]) -> bool:
     return any(p.lower() in tl for p in phrases)
 
 
+def _contains_word(text: str, words: List[str]) -> bool:
+    """Return True if any word appears as a separate token in text (word-boundary match)."""
+    import re
+    tl = text.lower()
+    for w in words:
+        if re.search(r"\b" + re.escape(w.lower()) + r"\b", tl):
+            return True
+    return False
+
+
 def detect_natural_intent(
     text_raw: Optional[str],
     session_id: Optional[str] = None,
@@ -70,8 +80,8 @@ def detect_natural_intent(
             "handler_name": "handle_no_content",
         }
 
-    # Affirmative / Consent (very simple)
-    if _contains_any(tl, ["yes", "ya", "sure", "ok", "boleh", "iya"]):
+    # Affirmative / Consent (very simple) - require whole-word match to avoid matching substrings
+    if _contains_word(tl, ["yes", "ya", "sure", "ok", "boleh", "iya"]):
         return {
             "intent": "affirmative",
             "confidence": 0.9,
