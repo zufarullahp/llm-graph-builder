@@ -3,21 +3,23 @@ import sys
 from pathlib import Path
 import pytest
 
-# expose FakeGraph as a fixture
-from test_utils.fake_graph import FakeGraph
+# Ensure backend/ (project root for tests) is on sys.path at import time.
+# PyTest imports conftest.py as a module before running hooks like pytest_configure,
+# so we must add the project root here before importing test utilities.
+here = Path(__file__).resolve().parent
+project_root = here.parent
+project_root_str = str(project_root)
+if project_root_str not in sys.path:
+    sys.path.insert(0, project_root_str)
 
 
 def pytest_configure(config):
-    """Ensure the project `backend` package root is on sys.path so tests can import `src.*` modules.
+    """No-op hook retained for compatibility; sys.path is already adjusted at import-time."""
+    return
 
-    This makes running pytest in CI or locally simpler without setting PYTHONPATH externally.
-    """
-    # tests/ is located in backend/tests; project root for imports is backend/
-    here = Path(__file__).resolve().parent
-    project_root = here.parent
-    project_root_str = str(project_root)
-    if project_root_str not in sys.path:
-        sys.path.insert(0, project_root_str)
+
+# expose FakeGraph as a fixture
+from test_utils.fake_graph import FakeGraph
 
 
 @pytest.fixture

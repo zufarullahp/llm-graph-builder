@@ -5,6 +5,7 @@ from typing import Dict, Any, Optional
 from src.history_graph import save_history_graph
 from src.nid_handlers import persist_contact, get_and_clear_pending_contact
 from src.rule_instance import update_rule_instance_status
+from src.outbox import enqueue_email_job
 
 
 def _is_enabled() -> bool:
@@ -77,7 +78,7 @@ def store_email_and_notify(graph, session_id: str, slots: Dict[str, Any], rule_i
                         "meta": meta_str,
                     }
                     # debug-visible call
-                    print(f"DEBUG: calling cleanup_cypher with params={params}")
+                    logging.debug(f"calling cleanup_cypher with params=%s", params)
                     rows2 = graph.query(cleanup_cypher, params) if hasattr(graph, "query") else []
                     expired_count = rows2[0].get("expired_count") if rows2 else 0
                     logging.info(f"[RuleInstance] expired {expired_count} sibling WAITING instances for rule={params['ruleId']} session={session_id}")
@@ -87,8 +88,31 @@ def store_email_and_notify(graph, session_id: str, slots: Dict[str, Any], rule_i
             # defensive - never block the success path if cleanup fails
             logging.exception("Unexpected error during sibling RuleInstance cleanup")
 
+        # 6) enqueue outbox job into Postgres
+        outbox_job_id = None
+        try:
+            idempotency = None
+            try:
+                # prefer deterministic idempotency when rule_instance is present
+                if rule_instance and rule_instance.get("id"):
+                    idempotency = f"email:{session_id}:{rule_instance.get('id')}"
+            except Exception:
+                idempotency = None
+
+            outbox_job_id = enqueue_email_job(
+                session_id=session_id,
+                recipient_email=email,
+                subject="Your Privas AI summary",
+                body=f"Thanks — we'll send summaries to {email}.",
+                payload={"type": "send_email_summary", "email": email, "session_id": session_id},
+                rule_instance_id=rule_instance.get("id") if rule_instance else None,
+                idempotency_key=idempotency,
+            )
+        except Exception:
+            logging.exception("Failed to enqueue outbox job")
+
         msg = "Thanks — your email has been saved. I'll use it to send summaries if needed."
-        return {"ok": True, "message_override": msg, "updated_rule_status": "COMPLETED", "action_meta": {"resp_id": resp_id, "job_id": job_id}}
+        return {"ok": True, "message_override": msg, "updated_rule_status": "COMPLETED", "action_meta": {"resp_id": resp_id, "job_id": job_id, "outbox_job_id": outbox_job_id}}
 
     except Exception as e:
         logging.exception(f"store_email_and_notify failed: {e}")

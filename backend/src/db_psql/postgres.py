@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 
+import logging
 from src.core.config import get_settings
 
 
@@ -83,5 +84,5 @@ def check_database_health() -> dict:
 # ============================================================
 
 if __name__ == "__main__":
-    print("Checking Postgres connection...")
-    print(check_database_health())
+    logging.info("Checking Postgres connection...")
+    logging.info("%s", check_database_health())

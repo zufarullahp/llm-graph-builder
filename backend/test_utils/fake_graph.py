@@ -1,7 +1,5 @@
 import json
-
-
-import json
+import logging
 
 
 class FakeGraph:
@@ -84,7 +82,7 @@ class FakeGraph:
             except Exception:
                 meta_parsed = {"raw": meta}
             # debug
-            print(f"FakeGraph: expire siblings called with params={params}")
+            logging.debug("FakeGraph: expire siblings called with params=%s", params)
             for ri in self.rule_instances:
                 if ri.get("rule_id") == params.get("ruleId") and ri.get("status") == "WAITING" and ri.get("id") != params.get("currentId"):
                     ri["status"] = "EXPIRED"
@@ -138,7 +136,7 @@ class FakeGraph:
             except Exception:
                 meta_parsed = {"raw": meta}
             # debug
-            print(f"FakeGraph: expire siblings called with params={params}")
+            logging.debug("FakeGraph: expire siblings called with params=%s", params)
             for ri in self.rule_instances:
                 if ri.get("rule_id") == params.get("ruleId") and ri.get("status") == "WAITING" and ri.get("id") != params.get("currentId"):
                     ri["status"] = "EXPIRED"

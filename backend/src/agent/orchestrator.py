@@ -2,6 +2,7 @@
 import os
 import json
 import time
+import logging
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -67,7 +68,7 @@ async def _call_chat_bot(
         # /chat_bot mengharapkan string JSON untuk document_names
         "document_names": json.dumps(document_names or []),
     }
-    print(f"[agent→/chat_bot] mode={mode} uri={uri} user={userName} db={database} sess={session_id}")
+    logging.debug("[agent→/chat_bot] mode=%s uri=%s user=%s db=%s sess=%s", mode, uri, userName, database, session_id)
 
     if email:
         form["email"] = email
@@ -90,7 +91,7 @@ def _normalize_chatbot_response(raw: Dict[str, Any]) -> ChatBotResult:
         try:
             data = json.loads(data)
         except Exception:
-            print("⚠️  /chat_bot returned 'data' as string, not JSON:", data[:300])
+            logging.warning("/chat_bot returned 'data' as string, not JSON: %s", data[:300])
             data = {}
 
     info = data.get("info") or {}
@@ -147,7 +148,7 @@ async def run_agent_chat(req: AgentChatRequest) -> AgentChatResponse:
                 password=req.password,
                 database=req.database,
             )
-            print("[agent] /chat_bot RAW:", json.dumps(raw)[:600])
+            logging.debug("[agent] /chat_bot RAW: %s", json.dumps(raw)[:600])
         except Exception:
             # jika HTTP error, coba fallback berikutnya
             fallback_used = True
