@@ -1,5 +1,7 @@
 -- Schema for email outbox jobs
 
+-- psql -U app -d privas_dev
+
 CREATE TABLE IF NOT EXISTS email_jobs (
   id TEXT PRIMARY KEY,
   session_id TEXT,
@@ -26,3 +28,11 @@ CREATE INDEX IF NOT EXISTS idx_email_jobs_session_id ON email_jobs (session_id);
 
 -- Unique constraint on idempotency_key when not null
 CREATE UNIQUE INDEX IF NOT EXISTS ux_email_jobs_idempotency_key ON email_jobs (idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+
+-- \dt
+-- privas_dev=> \dt
+--                   List of tables
+--  Schema |         Name         | Type  |  Owner
+--  --------+----------------------+-------+----------
+--  public | email_jobs           | table | app

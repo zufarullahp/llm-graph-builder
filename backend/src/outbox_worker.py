@@ -10,20 +10,31 @@ from sqlalchemy import text
 
 from src.db_psql.postgres import engine
 from src.core.config import get_settings
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 SETTINGS = get_settings()
 
 
 def _send_email_smtp(recipient: str, subject: str, body: str) -> None:
-    host = os.getenv("SMTP_HOST") or getattr(SETTINGS, "SMTP_HOST", None)
-    port = int(os.getenv("SMTP_PORT") or getattr(SETTINGS, "SMTP_PORT", 587))
-    username = os.getenv("SMTP_USERNAME") or getattr(SETTINGS, "SMTP_USERNAME", None)
-    password = os.getenv("SMTP_PASSWORD") or getattr(SETTINGS, "SMTP_PASSWORD", None)
-    from_addr = os.getenv("SMTP_FROM") or getattr(SETTINGS, "SMTP_FROM", "noreply@example.com")
+    host = os.getenv("SMTP_HOST")
+    port = int(os.getenv("SMTP_PORT", 587))
+    username = os.getenv("SMTP_USERNAME")
+    password = os.getenv("SMTP_PASSWORD")
+    from_addr = os.getenv("SMTP_FROM", username)
 
     if not host:
         raise RuntimeError("SMTP_HOST not configured")
+
+    # Tentukan mode protokol berdasarkan port
+    if port == 465:
+        mode = "SSL"
+    elif port == 587:
+        mode = "STARTTLS"
+    else:
+        mode = "PLAIN"
 
     msg = EmailMessage()
     msg["Subject"] = subject
@@ -31,21 +42,55 @@ def _send_email_smtp(recipient: str, subject: str, body: str) -> None:
     msg["To"] = recipient
     msg.set_content(body)
 
-    # basic TLS-enabled SMTP
-    with smtplib.SMTP(host, port, timeout=30) as smtp:
-        try:
-            smtp.ehlo()
-            if port == 587:
+    start_time = time.time()
+    logging.info(
+        "[OUTBOX] Preparing SMTP send → host=%s port=%s mode=%s to=%s subject=%s",
+        host, port, mode, recipient, subject,
+    )
+
+    try:
+        # Port 465 → implicit SSL
+        if mode == "SSL":
+            with smtplib.SMTP_SSL(host, port, timeout=30) as smtp:
+                if username and password:
+                    smtp.login(username, password)
+                smtp.send_message(msg)
+
+        # Port 587 → STARTTLS
+        elif mode == "STARTTLS":
+            with smtplib.SMTP(host, port, timeout=30) as smtp:
+                smtp.ehlo()
                 smtp.starttls()
                 smtp.ehlo()
-            if username and password:
-                smtp.login(username, password)
-            smtp.send_message(msg)
-        finally:
-            try:
-                smtp.quit()
-            except Exception:
-                pass
+                if username and password:
+                    smtp.login(username, password)
+                smtp.send_message(msg)
+
+        # Lainnya → plain
+        else:
+            with smtplib.SMTP(host, port, timeout=30) as smtp:
+                if username and password:
+                    smtp.login(username, password)
+                smtp.send_message(msg)
+
+        duration = (time.time() - start_time) * 1000
+        logging.info(
+            "[OUTBOX] Email sent successfully → %s (%d ms) mode=%s",
+            recipient,
+            duration,
+            mode,
+        )
+
+    except Exception as e:
+        duration = (time.time() - start_time) * 1000
+        logging.error(
+            "[OUTBOX] SMTP send FAILED → %s (%d ms) mode=%s error=%s",
+            recipient,
+            duration,
+            mode,
+            str(e),
+        )
+        raise
 
 
 def claim_jobs(batch: int = 10) -> List[dict]:
@@ -68,7 +113,7 @@ def claim_jobs(batch: int = 10) -> List[dict]:
     )
     with engine.begin() as conn:
         res = conn.execute(sql, {"batch": batch})
-        rows = [dict(row) for row in res.fetchall()]
+        rows = [dict(row._mapping) for row in res.fetchall()]
     return rows
 
 

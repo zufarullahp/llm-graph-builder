@@ -42,7 +42,7 @@ def test_full_ask_email_if_missing_flow_integration(fake_graph):
 
     # 1) Simulate follow-up persisted (as if Composer emitted it)
     followup_text = "Can I save your email to send summaries?"
-    save_history_graph(graph, session_id, source="rag", input_text="q", rephrased=None, output_text=followup_text, ids=[], cypher=None, response_type="followup", proactive_reason="ask_email", trigger_meta={"admin_rule_id": "ask_email_if_missing"})
+    save_history_graph(graph, session_id, source="graph_vector_fulltext", input_text="q", rephrased=None, output_text=followup_text, ids=[], cypher=None, response_type="followup", proactive_reason="ask_email", trigger_meta={"admin_rule_id": "ask_email_if_missing"})
 
     # 2) Create RuleInstance (controller would do this)
     ri_id = create_rule_instance(graph, session_id, "ask_email_if_missing", asked_at_turn=2, metadata={"proactive_reason": "ask_email"})
@@ -82,7 +82,7 @@ def test_confirm_save_pending_contact_flow(fake_graph):
 
     # Simulate follow-up and RuleInstance
     followup_text = "Can I save your email to send summaries?"
-    save_history_graph(graph, session_id, source="rag", input_text="q", rephrased=None, output_text=followup_text, ids=[], cypher=None, response_type="followup", proactive_reason="ask_email", trigger_meta={"admin_rule_id": "ask_email_if_missing"})
+    save_history_graph(graph, session_id, source="graph_vector_fulltext", input_text="q", rephrased=None, output_text=followup_text, ids=[], cypher=None, response_type="followup", proactive_reason="ask_email", trigger_meta={"admin_rule_id": "ask_email_if_missing"})
     ri_id = create_rule_instance(graph, session_id, "ask_email_if_missing", asked_at_turn=1, metadata={"proactive_reason": "ask_email"})
     assert ri_id is not None
 

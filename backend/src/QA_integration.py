@@ -879,7 +879,7 @@ def process_chat_response(messages, history, question, model, graph, document_na
             save_history_graph(
                 graph=graph,
                 session_id=session_id,
-                source="rag",
+                source="graph_vector_fulltext",
                 input_text=question,
                 rephrased=standalone_question,
                 output_text=content,
