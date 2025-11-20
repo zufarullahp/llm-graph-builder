@@ -27,7 +27,7 @@ CREATE INDEX IF NOT EXISTS idx_email_jobs_next_retry_at ON email_jobs (next_retr
 CREATE INDEX IF NOT EXISTS idx_email_jobs_session_id ON email_jobs (session_id);
 
 -- Unique constraint on idempotency_key when not null
-CREATE UNIQUE INDEX IF NOT EXISTS ux_email_jobs_idempotency_key ON email_jobs (idempotency_key) WHERE idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX ux_email_jobs_idempotency_key ON public.email_jobs (idempotency_key);
 
 
 -- \dt
