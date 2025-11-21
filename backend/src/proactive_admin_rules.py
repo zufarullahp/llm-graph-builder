@@ -28,6 +28,27 @@ DEFAULT_RULES_BY_TENANT: Dict[str, List[Dict[str, Any]]] = {
                 "category": "contact_collection",
             },
         }
+        ,
+        {
+            "id": "generic_every_3_turns",
+            "name": "Every 3 turns helpful tip",
+            "active": True,
+            "event": "AFTER_ANSWER",
+            # top-level priority lower than contact collection rules
+            "priority": 10,
+            # high-level category for UX/tests
+            "category": "soft_followup",
+            # conditions expressed as a declarative dict for DPE mapping
+            "conditions": {
+                "every_n_turns": 3,
+                "requires_context": False,
+            },
+            # key used by Composer for template selection
+            "template_key": "tip_every_3_turns_v1",
+            # hint for cooldown enforcement (interpreted elsewhere)
+            "cooldown_hint": "3_turns",
+            "flags": {"soft_skip": True},
+        }
     ]
 }
 
@@ -81,6 +102,23 @@ def evaluate_admin_rules(
         min_turn = int(rule.get("min_turn", 1) or 1)
         if turn_index < min_turn:
             continue
+
+        # Support declarative every_n_turns condition (e.g., every 3 turns)
+        conditions = rule.get("conditions") or {}
+        every_n = conditions.get("every_n_turns")
+        if every_n is not None:
+            try:
+                every_n_val = int(every_n)
+            except Exception:
+                every_n_val = None
+
+            # ignore invalid or non-positive values
+            if every_n_val is None or every_n_val <= 0:
+                pass
+            else:
+                # Skip for turn 0 and when current turn is not a multiple of every_n
+                if turn_index == 0 or (turn_index % every_n_val) != 0:
+                    continue
 
         # Optional: max_per_session (kalau mau batasi 1x/ session)
         max_per_session = rule.get("max_per_session")

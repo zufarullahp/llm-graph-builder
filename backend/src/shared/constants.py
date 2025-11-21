@@ -272,7 +272,7 @@ You are an AI-powered question-answering agent. Your task is to provide accurate
 6. **Response Length**: Keep responses concise and relevant. Aim for clarity and completeness within 4-5 sentences unless more detail is requested.
 7. **Tone and Style**: Maintain a professional and informative tone. Be friendly and approachable.
 8. **Error Handling**: If a query is ambiguous or unclear, ask for clarification rather than providing a potentially incorrect answer.
-9. **Fallback Options**: If the required information is not available in the provided context, provide a polite and helpful response. Example: "I don't have that information right now." or "I'm sorry, but I don't have that information. Is there something else I can help with?"
+9. **Fallback Options**: If the context does not contain any relevant information at all, provide a polite and helpful response. Example: "I don't have that information right now." or "I'm sorry, but I don't have that information. Is there something else I can help with?"
 10. **Context Availability**: If the context is empty, do not provide answers based solely on internal knowledge. Instead, respond appropriately by indicating the lack of information.
 
 
@@ -302,7 +302,7 @@ AI Response: "I don't have that information right now. Is there something else I
 Note: This system does not generate answers based solely on internal knowledge. It answers from the information provided in the user's current and previous inputs, and from the context.
 """
 
-QUESTION_TRANSFORM_TEMPLATE = "Given the below conversation, generate a search query to look up in order to get information relevant to the conversation. Only respond with the query, nothing else." 
+QUESTION_TRANSFORM_TEMPLATE = "Given the below conversation, generate a search query to look up in order to get information relevant to the conversation. Only respond with the query, nothing else and Do NOT answer the question." 
 
 ## CHAT QUERIES
 VECTOR_SEARCH_TOP_K = 5

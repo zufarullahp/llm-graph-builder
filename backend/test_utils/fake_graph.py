@@ -19,6 +19,7 @@ class FakeGraph:
         self.saved_responses = []
         self.rule_instances = []
         self.jobs = []
+        self.profiles = {}
         self._ri_seq = 0
         self._resp_seq = 0
 
@@ -149,6 +150,11 @@ class FakeGraph:
         if "SET s.email" in cypher:
             email = params.get("email")
             self.sessions.setdefault(sid, {})["email"] = email
+            # also mirror into profiles for compatibility with Profile-based storage
+            try:
+                self.profiles.setdefault(sid, {})["email"] = email
+            except Exception:
+                pass
             return [{"sid": "session-el"}]
 
         # Create Job stub

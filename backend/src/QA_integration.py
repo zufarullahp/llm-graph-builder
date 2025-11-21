@@ -581,6 +581,26 @@ def process_chat_response(messages, history, question, model, graph, document_na
 
         # --- Natural Intent Detection (v1 rule-based) -----------------
         try:
+            # Helper to persist NID handler replies centrally (best-effort)
+            def _persist_nid_reply(reply_text: str, intent_name: str, handler_name: str = "rule_based", extra_meta: dict | None = None):
+                try:
+                    meta = {"kind": "nid_ack", "intent": intent_name, "handler": handler_name}
+                    if extra_meta:
+                        meta.update(extra_meta)
+                    save_history_graph(
+                        graph=graph,
+                        session_id=session_id,
+                        source="nid_handler",
+                        input_text=question,
+                        rephrased=None,
+                        output_text=reply_text,
+                        ids=[],
+                        cypher=None,
+                        response_type="answer",
+                        trigger_meta=meta,
+                    )
+                except Exception:
+                    logging.exception("Failed to persist NID handler reply to history_graph")
             nid = detect_natural_intent(question, session_id=session_id)
             logging.debug(f"[NID] result={nid}")
             # If detector says no retrieval required, handle immediately with a small reply
@@ -679,6 +699,13 @@ def process_chat_response(messages, history, question, model, graph, document_na
                             reply = router_result.get("message_override")
                     except Exception as _e:
                         logging.exception(f"Error routing meta-turn to action router: {_e}")
+
+                    # Persist the NID handler reply in the central history_graph (best-effort)
+                    try:
+                        _persist_nid_reply(reply_text=reply, intent_name=(nid.get("intent") or "unknown"), handler_name="rule_based", extra_meta={"router": router_result if 'router_result' in locals() else None})
+                    except Exception:
+                        # already logged inside helper
+                        pass
 
                     return {
                         "session_id": session_id,
@@ -792,6 +819,12 @@ def process_chat_response(messages, history, question, model, graph, document_na
                     except Exception as _e:
                         logging.exception(f"Error routing meta-turn to action router (LLM NID): {_e}")
 
+                    # Persist the LLM NID handler reply centrally (best-effort)
+                    try:
+                        _persist_nid_reply(reply_text=reply, intent_name=(llm_nid.get("intent") if llm_nid else (nid.get("intent") if nid else "unknown")), handler_name="llm_nid", extra_meta={"router": router_result if 'router_result' in locals() else None})
+                    except Exception:
+                        pass
+
                     return {
                         "session_id": session_id,
                         "message": reply,
@@ -836,7 +869,46 @@ def process_chat_response(messages, history, question, model, graph, document_na
         docs, transformed_question = retrieve_documents(doc_retriever, messages_for_retriever)
 
         if docs:
-            effective_question = transformed_question or standalone_question
+            # Defensive guard: if transformed_question looks like a full answer (not a rewrite),
+            # avoid passing an "answer" as the question to the RAG chain — prefer the standalone rewrite.
+            def _looks_like_answer(text: str) -> bool:
+                if not text:
+                    return False
+                txt = text.strip()
+                # Heuristics: long text, multiple lines, or common answer phrases / bulleted content
+                try:
+                    if len(txt.split()) > 30:
+                        return True
+                except Exception:
+                    pass
+                if "\n" in txt and len([ln for ln in txt.splitlines() if ln.strip()]) > 1:
+                    return True
+                lowered = txt.lower()
+                answer_indicators = [
+                    "in the context",
+                    "typically",
+                    "for example",
+                    "you can",
+                    "here are",
+                    "the following",
+                    "as follows",
+                    "i recommend",
+                    "you should",
+                    "- ",
+                    "• ",
+                ]
+                if any(k in lowered for k in answer_indicators):
+                    return True
+                return False
+
+            if transformed_question and _looks_like_answer(transformed_question):
+                logging.warning(
+                    "[QA][Guard] transformed_question looks like an answer; using standalone_question for RAG. transformed_preview=%s",
+                    (transformed_question[:300].replace("\n", " ") + "...") if len(transformed_question) > 300 else transformed_question.replace("\n", " ")
+                )
+                effective_question = standalone_question
+            else:
+                effective_question = transformed_question or standalone_question
 
             content, result, total_tokens, formatted_docs = process_documents(
                 docs=docs,
@@ -935,11 +1007,6 @@ def process_chat_response(messages, history, question, model, graph, document_na
             logging.error(f"[Proactive] Error in maybe_trigger_proactive_followup (chat): {e}")
             followup_text = None
 
-        # 7️⃣ Optional async summarization
-        summarization_thread = threading.Thread(target=summarize_and_log, args=(history, messages, llm))
-        summarization_thread.start()
-        logging.info("Summarization thread started.")
-
         metric_details = {"question": question, "contexts": formatted_docs, "answer": content}
 
         return {
@@ -978,44 +1045,6 @@ def process_chat_response(messages, history, question, model, graph, document_na
             "user": "chatbot",
         }
 
-
-# Prosess chat history summarization in a separate thread 
-# TODO: Edit function to use better history summarization approach
-def summarize_and_log(history, stored_messages, llm):
-    logging.info("Starting summarization in a separate thread.")
-    if not stored_messages:
-        logging.info("No messages to summarize.")
-        return False
-
-    try:
-        start_time = time.time()
-
-        summarization_prompt = ChatPromptTemplate.from_messages(
-            [
-                MessagesPlaceholder(variable_name="chat_history"),
-                (
-                    "human",
-                    "Summarize the above chat messages into a concise message, focusing on key points and relevant details that could be useful for future conversations. Exclude all introductions and extraneous information."
-                ),
-            ]
-        )
-        summarization_chain = summarization_prompt | llm
-
-        summary_message = summarization_chain.invoke({"chat_history": stored_messages})
-
-        with threading.Lock():
-            history.clear()
-            history.add_user_message("Our current conversation summary till now")
-            history.add_message(summary_message)
-
-        history_summarized_time = time.time() - start_time
-        logging.info(f"Chat History summarized in {history_summarized_time:.2f} seconds")
-
-        return True
-
-    except Exception as e:
-        logging.error(f"An error occurred while summarizing messages: {e}", exc_info=True)
-        return False 
     
 def create_graph_chain(model, graph):
     try:
@@ -1121,7 +1150,6 @@ def process_graph_response(model, graph, question, messages, history, session_id
     - Rephrase question (standalone) pakai history_graph.
     - Panggil GraphCypherQAChain via get_graph_response().
     - Simpan turn ke history_graph (input, rephrased, output, cypher, context_ids).
-    - Summarization hanya untuk logging, bukan sebagai konteks utama.
     """
     model_version = ""
     try:
@@ -1191,13 +1219,6 @@ def process_graph_response(model, graph, question, messages, history, session_id
         except Exception as e:
             logging.error(f"Failed to save graph history for session {session_id}: {e}")
 
-        # 7️⃣ Summarization untuk logging saja (tidak dipakai sebagai context prompt utama)
-        summarization_thread = threading.Thread(
-            target=summarize_and_log,
-            args=(history, messages, qa_llm),
-        )
-        summarization_thread.start()
-        logging.info("Summarization thread started.")
 
         # 8️⃣ Bungkus hasil ke response API
         metric_details = {

@@ -5,6 +5,34 @@ import logging
 from langchain.schema import SystemMessage, HumanMessage
 
 
+# Simple static templates map for non-LLM, fast-path templates
+TEMPLATES = {
+    "tip_every_3_turns_v1": (
+        "Quick tip: you can ask me for examples, clarifications, or next steps anytime."
+    ),
+}
+
+
+def resolve_template(template_key: str) -> Optional[str]:
+    """Resolve a static template by key. Returns None if not found."""
+    return TEMPLATES.get(template_key)
+
+
+def compose_followup_template(rule: Dict[str, Any], session_state: Dict[str, Any], retrieval_info: Dict[str, Any]) -> Optional[str]:
+    """Compose a follow-up message from a static template key present on the rule.
+
+    This is a non-LLM, fast-path used for simple admin rules with canned text.
+    """
+    if not rule:
+        return None
+    template_key = rule.get("template_key") or rule.get("llm_instruction")
+    if not template_key:
+        return None
+    # if template_key looks like a key in TEMPLATES, return it
+    text = resolve_template(template_key)
+    return text
+
+
 def detect_language_simple(question: str, primary_answer: str) -> str:
     """
     Heuristic sangat sederhana untuk deteksi bahasa user.

@@ -22,7 +22,8 @@ class graphDBdataAccess:
         cyphers = [
             "CREATE CONSTRAINT session_id IF NOT EXISTS FOR (s:Session) REQUIRE s.id IS UNIQUE",
             "CREATE CONSTRAINT response_id IF NOT EXISTS FOR (r:Response) REQUIRE r.id IS UNIQUE",
-            "CREATE INDEX response_createdAt IF NOT EXISTS FOR (r:Response) ON (r.createdAt)"
+            "CREATE INDEX response_createdAt IF NOT EXISTS FOR (r:Response) ON (r.createdAt)",
+            "CREATE CONSTRAINT profile_session_id_unique IF NOT EXISTS FOR (p:Profile) REQUIRE p.session_id IS UNIQUE;",
         ]
         for c in cyphers:
             try:

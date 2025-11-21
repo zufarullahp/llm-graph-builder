@@ -55,6 +55,8 @@ def evaluate_proactive_decision_v1(
     primary_answer: str,
     retrieval_info: Dict[str, Any],
     mode: str,
+    graph=None,
+    session_id: str | None = None,
 ) -> Tuple[bool, str, Dict[str, Any], List[Dict[str, Any]]]:
     """
     DPE v1:
@@ -111,12 +113,24 @@ def evaluate_proactive_decision_v1(
         if admin_rule_candidate and isinstance(admin_rule_candidate, dict):
             rid = admin_rule_candidate.get("rule_id") or admin_rule_candidate.get("id") or admin_rule_candidate.get("rule")
             if rid == "ask_email_if_missing":
-                # session_state may contain session fields like 'email'
-                if session_state.get("email"):
-                    logging.info("[Proactive][DPE] skipping ask_email_if_missing because session already has email")
-                    return False, "email_already_present", {"turnCount": turn_count, "reason": "email_already_present"}, top_entities
+                # Prefer graph-backed check if graph + session_id provided
+                try:
+                    from src.proactive_guards import has_collected_email
+
+                    if graph is not None and session_id:
+                        if has_collected_email(graph, session_id):
+                            logging.info("[Proactive][DPE] skipping ask_email_if_missing because email already present (graph check)")
+                            return False, "email_already_present", {"turnCount": turn_count, "reason": "email_already_present"}, top_entities
+                    else:
+                        # fallback to session_state (legacy behavior)
+                        if session_state.get("email"):
+                            logging.info("[Proactive][DPE] skipping ask_email_if_missing because session already has email (session_state)")
+                            return False, "email_already_present", {"turnCount": turn_count, "reason": "email_already_present"}, top_entities
+                except Exception:
+                    logging.exception("Error evaluating admin_rule_candidate guard in DPE")
+                    # if guard fails, continue to DPE decision (fail-open)
     except Exception:
-        logging.exception("Error evaluating admin_rule_candidate guard in DPE")
+        logging.exception("Error evaluating admin_rule_candidate guard in DPE outer")
 
 
 

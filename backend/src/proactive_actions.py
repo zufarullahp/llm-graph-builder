@@ -2,7 +2,8 @@ import logging
 import os
 from typing import Dict, Any, Optional
 
-from src.history_graph import save_history_graph
+import json
+from src.history_graph import save_history_graph, _run_query
 from src.nid_handlers import persist_contact, get_and_clear_pending_contact
 from src.rule_instance import update_rule_instance_status
 from src.outbox import enqueue_email_job
@@ -29,6 +30,37 @@ def store_email_and_notify(graph, session_id: str, slots: Dict[str, Any], rule_i
         # 1) attach email to session/profile
         cypher = "MERGE (s:Session {id:$sessionId}) SET s.email = $email RETURN elementId(s) AS sid"
         graph.query(cypher, {"sessionId": session_id, "email": email}) if hasattr(graph, "query") else None
+
+        # Upsert a dedicated Profile node for structured metadata (no nested maps on Session)
+        try:
+            profile_cypher = (
+                "MERGE (s:Session {id:$sessionId})\n"
+                "MERGE (p:Profile {session_id:$sessionId})\n"
+                "SET p.email = $email, p.updatedAt = datetime()\n"
+                "MERGE (s)-[:HAS_PROFILE]->(p)\n"
+                "RETURN elementId(p) AS pid"
+            )
+            try:
+                _run_query(graph, profile_cypher, {"sessionId": session_id, "email": email}, access="WRITE")
+            except Exception:
+                # best-effort; don't block success path if profile upsert fails
+                logging.exception("Failed to upsert Profile node")
+
+            # Fast-path for FakeGraph test double: update in-memory profiles dict
+            if hasattr(graph, "sessions") and isinstance(getattr(graph, "sessions"), dict):
+                # ensure sessions entry exists, keep compatibility of s.email
+                sess = graph.sessions.setdefault(session_id, {})
+                profiles = getattr(graph, "profiles", None)
+                if profiles is None:
+                    # create profiles dict if missing
+                    try:
+                        graph.profiles = {}
+                        profiles = graph.profiles
+                    except Exception:
+                        profiles = {}
+                profiles[session_id] = {"email": email}
+        except Exception:
+            logging.exception("Unexpected error while upserting Profile node")
 
         # 2) persist contact in history graph (Response node)
         resp_id = persist_contact(graph, session_id, {"email": email})

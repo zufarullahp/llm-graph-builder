@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
 from src.proactive_dpe import evaluate_proactive_decision_v1
-from src.proactive_composer import compose_followup_message_v1
+from src.proactive_composer import compose_followup_message_v1, compose_followup_template
 from src.proactive_entity_inspector import inspect_entities_in_graph
 from src.history_graph import save_history_graph, _run_query
 from src.proactive_admin_rules import load_proactive_rules_for_tenant, evaluate_admin_rules
@@ -415,6 +415,8 @@ def maybe_trigger_proactive_followup(
         primary_answer=primary_answer,
         retrieval_info=retrieval_info,
         mode=mode,
+        graph=graph,
+        session_id=session_id,
     )
 
     if not allow:
@@ -424,9 +426,25 @@ def maybe_trigger_proactive_followup(
         )
         return None
 
-    # 5. Composer v1 (LLM) – build bubble #2 text
-    #    Kalau ada admin_rule, Composer bisa gunakan llm_instruction-nya.
-    followup_text = compose_followup_message_v1(
+    # 5. Composer – prefer static template fast-path if admin_rule provides a template_key
+    if admin_rule and admin_rule.get("template_key"):
+        try:
+            text = compose_followup_template(admin_rule, state, retrieval_info)
+            if text:
+                logging.info(
+                    f"[Proactive][Controller] Using static template fast-path for rule={admin_rule.get('id')}"
+                )
+                # assign to followup_text and fall through to persistence block
+                followup_text = text
+            else:
+                followup_text = None
+        except Exception:
+            logging.exception("[Proactive][Controller] static template fast-path failed, falling back to LLM")
+            followup_text = None
+
+    # 5b. Fallback to LLM-based composer when no static template or fast-path failed
+    if not ("followup_text" in locals() and followup_text):
+        followup_text = compose_followup_message_v1(
         llm=llm,
         question=question,
         standalone_question=standalone_question,
