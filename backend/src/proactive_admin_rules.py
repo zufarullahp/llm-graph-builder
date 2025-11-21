@@ -74,17 +74,18 @@ def evaluate_admin_rules(
     session_state: Dict[str, Any],
     runtime_context: Dict[str, Any],
     rules: List[Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
+    return_all: bool = False,
+) -> Optional[List[Dict[str, Any]]]:
     """
-    Pure function: pilih SATU rule admin yang paling cocok.
-    Tidak melakukan I/O, hanya pakai state + context.
+    Pure function: return an ordered list of eligible admin rules (candidates).
+    This function remains pure (no I/O) and only uses session_state + runtime_context
+    to filter and rank rules. The controller/DPE may then iterate candidates and
+    apply more expensive or stateful checks (e.g., graph-based pre-filters).
 
-    return:
-      - dict rule terpilih (sudah siap dikirim ke DPE/Composer), atau
-      - None kalau tidak ada yang eligible.
+    return: list of rule dicts ordered by priority (highest first). Empty list if none.
     """
     if not rules:
-        return None
+        return [] if return_all else None
 
     event = runtime_context.get("event", "AFTER_ANSWER")
     turn_index = session_state.get("turnCount", 0) or 0
@@ -131,15 +132,22 @@ def evaluate_admin_rules(
 
     if not candidates:
         logging.debug("[Proactive][AdminRules] No eligible admin rules for this turn")
-        return None
+        return [] if return_all else None
 
-    # Pilih berdasarkan priority tertinggi
-    best = sorted(
+    # Return candidates ordered by priority (highest first)
+    ordered = sorted(
         candidates,
         key=lambda r: int(r.get("priority", 0)),
         reverse=True,
-    )[0]
+    )
 
+    logging.info(
+        f"[Proactive][AdminRules] {len(ordered)} eligible rules found for turn={turn_index}"
+    )
+    if return_all:
+        return ordered
+    # Backwards-compatible single-selection behavior: return the highest-priority rule
+    best = ordered[0] if ordered else None
     logging.info(
         f"[Proactive][AdminRules] Selected rule id={best.get('id')} "
         f"name={best.get('name')} for turn={turn_index}"

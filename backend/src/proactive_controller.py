@@ -2,13 +2,44 @@
 import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+import json
 
 from src.proactive_dpe import evaluate_proactive_decision_v1
 from src.proactive_composer import compose_followup_message_v1, compose_followup_template
 from src.proactive_entity_inspector import inspect_entities_in_graph
 from src.history_graph import save_history_graph, _run_query
 from src.proactive_admin_rules import load_proactive_rules_for_tenant, evaluate_admin_rules
+from src.proactive_guards import has_collected_email
 from src.rule_instance import create_rule_instance
+
+
+def _collect_metric(event: str, **fields) -> None:
+    """Safe metric collector for proactive pipeline decisions.
+
+    - Logs to the `[ProactiveMetric]` namespace using `logging.info`.
+    - Serializes `fields` with `json.dumps(..., ensure_ascii=False)`.
+    - Never raises: on serialization failure falls back to logging field keys only.
+    """
+    try:
+        payload = json.dumps(fields, ensure_ascii=False)
+    except Exception:
+        try:
+            # Fallback: only log the field names to avoid serialization errors
+            payload = json.dumps({"keys": list(fields.keys())}, ensure_ascii=False)
+        except Exception:
+            # Last-resort: don't allow any exception to bubble up
+            try:
+                logging.info(f"[ProactiveMetric] {event} | keys={list(fields.keys())}")
+            except Exception:
+                # swallow any logging error
+                pass
+            return
+
+    try:
+        logging.info(f"[ProactiveMetric] {event} | {payload}")
+    except Exception:
+        # swallowing any logging error to ensure no impact on control flow
+        pass
 
 TURN_COOLDOWN_TURNS = 3       # spec: min 3 turns
 TIME_COOLDOWN_SECONDS = 30    # spec: 30–60s, we start with 30s
@@ -377,7 +408,7 @@ def maybe_trigger_proactive_followup(
     # 3. Admin-configurable rules (lapisan baru)
     try:
         rules = load_proactive_rules_for_tenant(tenant_id)
-        admin_rule = evaluate_admin_rules(
+        candidates = evaluate_admin_rules(
             session_state=state,
             runtime_context={
                 "event": "AFTER_ANSWER",
@@ -386,45 +417,143 @@ def maybe_trigger_proactive_followup(
                 "standalone_question": standalone_question,
             },
             rules=rules,
+            return_all=True,
         )
+        # Metric: admin candidates loaded (only rule IDs)
+        try:
+            _collect_metric("admin_candidates_loaded", candidates=[r.get("id") for r in (candidates or [])])
+        except Exception:
+            # _collect_metric is safe but guard anyway
+            pass
     except Exception as e:
         logging.error(
             f"[Proactive][AdminRules] Error while evaluating rules "
             f"session={session_id}: {e}"
         )
-        admin_rule = None
+        candidates = []
 
-    # Masukkan admin_rule candidate ke retrieval_info agar DPE bisa lihat
-    # (tanpa mengubah signature DPE).
-    if admin_rule:
+    # Pre-filter cheap graph-based inapplicable rules (e.g., ask_email_if_missing)
+    try:
+        filtered_candidates = []
+        email_collected = has_collected_email(graph, session_id)
+        for r in (candidates or []):
+            # If the rule explicitly asks for email but we already have email, skip it
+            if r.get("id") == "ask_email_if_missing" and email_collected:
+                logging.debug(
+                    f"[Proactive][AdminRules] Pre-filtering rule={r.get('id')} because email exists for session={session_id}"
+                )
+                try:
+                    _collect_metric("email_prefilter_applied", removed="ask_email_if_missing")
+                except Exception:
+                    pass
+                continue
+            filtered_candidates.append(r)
+        candidates = filtered_candidates
+    except Exception:
+        # If guard check fails, fall back to original candidates
+        logging.exception("[Proactive][AdminRules] Pre-filter check failed")
+
+    # Attach candidate summary to retrieval_info for visibility (DPE may still be called per-candidate)
+    if candidates:
         retrieval_info = dict(retrieval_info or {})
-        retrieval_info["admin_rule_candidate"] = {
-            "id": admin_rule.get("id"),
-            "name": admin_rule.get("name"),
-            "event": admin_rule.get("event"),
-            "priority": admin_rule.get("priority"),
-            "metadata": admin_rule.get("metadata") or {},
-        }
+        retrieval_info["admin_rule_candidates"] = [
+            {"id": c.get("id"), "name": c.get("name"), "priority": c.get("priority")}
+            for c in candidates
+        ]
 
-    # 4. DPE v1 (LLM-based policy) – sekarang tahu tentang admin_rule_candidate
-    allow, reason, trigger_meta, _top_entities = evaluate_proactive_decision_v1(
-        llm=llm,
-        session_state=state,
-        question=question,
-        standalone_question=standalone_question,
-        primary_answer=primary_answer,
-        retrieval_info=retrieval_info,
-        mode=mode,
-        graph=graph,
-        session_id=session_id,
-    )
-
-    if not allow:
+    # Iterate candidates in priority order and ask DPE about each one until one is allowed.
+    admin_rule = None
+    decision_reason = None
+    trigger_meta = None
+    if candidates:
         logging.debug(
-            f"[Proactive][Controller] DPE decided SKIP for session={session_id}, "
-            f"reason={reason}"
+            f"[Proactive][AdminRules] Candidate list for session={session_id}: "
+            f"{[c.get('id') for c in candidates]}"
+        )
+        for candidate in candidates:
+            # Metric: admin candidate checked (rule id + soft_skip flag)
+            try:
+                flags = candidate.get("flags") or {}
+                _collect_metric("admin_candidate_checked", rule=candidate.get("id"), soft_skip=bool(flags.get("soft_skip", False)))
+            except Exception:
+                pass
+            # Prepare retrieval_info hint for this candidate
+            this_retrieval_info = dict(retrieval_info or {})
+            this_retrieval_info["admin_rule_candidate"] = {
+                "id": candidate.get("id"),
+                "name": candidate.get("name"),
+                "event": candidate.get("event"),
+                "priority": candidate.get("priority"),
+                "metadata": candidate.get("metadata") or {},
+            }
+
+            allow, reason, tmeta, _top_entities = evaluate_proactive_decision_v1(
+                llm=llm,
+                session_state=state,
+                question=question,
+                standalone_question=standalone_question,
+                primary_answer=primary_answer,
+                retrieval_info=this_retrieval_info,
+                mode=mode,
+                graph=graph,
+                session_id=session_id,
+            )
+            # Metric: DPE decision for this candidate
+            try:
+                _collect_metric("dpe_decision", rule=candidate.get("id"), allow=bool(allow), reason=reason)
+            except Exception:
+                pass
+
+            logging.info(
+                f"[Proactive][AdminRules] DPE decision for rule={candidate.get('id')} allow={allow} reason={reason}"
+            )
+
+            if allow:
+                # Metric: selected rule
+                try:
+                    _collect_metric("selected_rule", rule=candidate.get("id"))
+                except Exception:
+                    pass
+
+                admin_rule = candidate
+                decision_reason = reason
+                trigger_meta = tmeta
+                break
+            else:
+                # If rule is marked soft_skip, continue to next candidate
+                flags = candidate.get("flags") or {}
+                if flags.get("soft_skip"):
+                    try:
+                        _collect_metric("soft_skip_triggered", rule=candidate.get("id"))
+                    except Exception:
+                        pass
+
+                    logging.debug(
+                        f"[Proactive][AdminRules] Rule={candidate.get('id')} soft-skipped by DPE for session={session_id}: {reason}"
+                    )
+                    continue
+                else:
+                    try:
+                        _collect_metric("hard_block", rule=candidate.get("id"))
+                    except Exception:
+                        pass
+
+                    # Hard block — stop evaluating further candidates
+                    logging.debug(
+                        f"[Proactive][AdminRules] Rule={candidate.get('id')} blocked by DPE for session={session_id}: {reason}"
+                    )
+                    admin_rule = None
+                    break
+
+    # We already ran DPE per-candidate above. If no candidate was allowed, skip.
+    if not admin_rule:
+        logging.debug(
+            f"[Proactive][Controller] No admin rule allowed after DPE candidate evaluation for session={session_id}"
         )
         return None
+
+    # Use the decision reason/trigger_meta recorded during candidate evaluation
+    reason = decision_reason
 
     # 5. Composer – prefer static template fast-path if admin_rule provides a template_key
     if admin_rule and admin_rule.get("template_key"):
@@ -457,6 +586,10 @@ def maybe_trigger_proactive_followup(
     )
 
     if not followup_text:
+        try:
+            _collect_metric("followup_empty", rule=admin_rule.get("id") if admin_rule else None)
+        except Exception:
+            pass
         logging.debug(
             f"[Proactive][Controller] Composer returned empty text for "
             f"session={session_id}, reason={reason}"
@@ -472,6 +605,12 @@ def maybe_trigger_proactive_followup(
             cid = c.get("id")
             if cid:
                 ctx_ids.append(cid)
+
+        # Metric: follow-up generated (rule id + length)
+        try:
+            _collect_metric("followup_generated", rule=admin_rule.get("id") if admin_rule else None, length=len(followup_text) if followup_text else 0)
+        except Exception:
+            pass
 
         save_history_graph(
             graph=graph,
