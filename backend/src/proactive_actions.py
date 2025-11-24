@@ -7,6 +7,7 @@ from src.history_graph import save_history_graph, _run_query
 from src.nid_handlers import persist_contact, get_and_clear_pending_contact
 from src.rule_instance import update_rule_instance_status
 from src.outbox import enqueue_email_job
+from src.email_composer import compose_email_content
 
 
 def _is_enabled() -> bool:
@@ -131,11 +132,19 @@ def store_email_and_notify(graph, session_id: str, slots: Dict[str, Any], rule_i
             except Exception:
                 idempotency = None
 
+            # Attempt to compose subject/body from recent context using an LLM (best-effort)
+            try:
+                subject, body = compose_email_content(graph, session_id, resp_id, email)
+            except Exception:
+                logging.exception("Failed to compose email content; falling back to template")
+                subject = "Your Privas AI summary"
+                body = f"Thanks — we'll send summaries to {email}."
+
             outbox_job_id = enqueue_email_job(
                 session_id=session_id,
                 recipient_email=email,
-                subject="Your Privas AI summary",
-                body=f"Thanks — we'll send summaries to {email}.",
+                subject=subject,
+                body=body,
                 payload={"type": "send_email_summary", "email": email, "session_id": session_id},
                 rule_instance_id=rule_instance.get("id") if rule_instance else None,
                 idempotency_key=idempotency,
