@@ -25,9 +25,9 @@ CREATE TABLE IF NOT EXISTS email_jobs (
 CREATE INDEX IF NOT EXISTS idx_email_jobs_status ON email_jobs (status);
 CREATE INDEX IF NOT EXISTS idx_email_jobs_next_retry_at ON email_jobs (next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_email_jobs_session_id ON email_jobs (session_id);
+CREATE UNIQUE INDEX ux_email_jobs_idempotency_key ON public.email_jobs (idempotency_key);
 
 -- Unique constraint on idempotency_key when not null
-CREATE UNIQUE INDEX ux_email_jobs_idempotency_key ON public.email_jobs (idempotency_key);
 
 
 -- \dt

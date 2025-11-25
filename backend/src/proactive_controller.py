@@ -153,7 +153,6 @@ def register_proactive_emission(graph, session_id: str, now: Optional[datetime] 
         logging.error(f"Failed to register proactive emission for {session_id}: {e}")
         return get_session_state(graph, session_id)
 
-
 def evaluate_cooldown(state: Dict[str, Any], now: Optional[datetime] = None) -> bool:
     """
     Pure function: given session state, decide if cooldown is satisfied.
@@ -175,6 +174,7 @@ def evaluate_cooldown(state: Dict[str, Any], now: Optional[datetime] = None) -> 
     if turn_count <= 1:
         return True
 
+# NICE-TO-HAVE : only turn_count for MVP 
     # Turn-based cooldown
     if (turn_count - last_turn) < TURN_COOLDOWN_TURNS:
         return False
@@ -555,21 +555,9 @@ def maybe_trigger_proactive_followup(
     # Use the decision reason/trigger_meta recorded during candidate evaluation
     reason = decision_reason
 
-    # 5. Composer – prefer static template fast-path if admin_rule provides a template_key
-    if admin_rule and admin_rule.get("template_key"):
-        try:
-            text = compose_followup_template(admin_rule, state, retrieval_info)
-            if text:
-                logging.info(
-                    f"[Proactive][Controller] Using static template fast-path for rule={admin_rule.get('id')}"
-                )
-                # assign to followup_text and fall through to persistence block
-                followup_text = text
-            else:
-                followup_text = None
-        except Exception:
-            logging.exception("[Proactive][Controller] static template fast-path failed, falling back to LLM")
-            followup_text = None
+    # Template path disabled: always use LLM-based composer.
+    # Template fast-path removed per composer unification (Step 2).
+    followup_text = None
 
     # 5b. Fallback to LLM-based composer when no static template or fast-path failed
     if not ("followup_text" in locals() and followup_text):
@@ -631,6 +619,7 @@ def maybe_trigger_proactive_followup(
         )
 
         # If an admin_rule triggered this follow-up, create a per-session RuleInstance
+        
         try:
             if admin_rule and admin_rule.get("id"):
                 # use current turn count as asked_at_turn

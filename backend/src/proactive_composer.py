@@ -5,7 +5,10 @@ import logging
 from langchain.schema import SystemMessage, HumanMessage
 
 
-# Simple static templates map for non-LLM, fast-path templates
+# NOTE (refactor): static templates are deprecated.
+# All runtime follow-ups should be generated via the LLM in
+# `compose_followup_message_v1()`; templates remain only as examples
+# and for possible future cleanup.
 TEMPLATES = {
     "tip_every_3_turns_v1": (
         "Quick tip: you can ask me for examples, clarifications, or next steps anytime."
@@ -14,23 +17,25 @@ TEMPLATES = {
 
 
 def resolve_template(template_key: str) -> Optional[str]:
-    """Resolve a static template by key. Returns None if not found."""
+    """(Deprecated) Resolve a static template by key. Returns None if not found.
+
+    Templates are deprecated for runtime use — prefer the LLM composer.
+    """
     return TEMPLATES.get(template_key)
 
 
 def compose_followup_template(rule: Dict[str, Any], session_state: Dict[str, Any], retrieval_info: Dict[str, Any]) -> Optional[str]:
-    """Compose a follow-up message from a static template key present on the rule.
+    """Deprecated: previously returned a static template string for a rule.
 
-    This is a non-LLM, fast-path used for simple admin rules with canned text.
+    This function is intentionally deprecated and now returns `None` to
+    ensure the runtime uses the LLM-based composer (`compose_followup_message_v1`).
+    The signature is preserved for compatibility.
     """
-    if not rule:
-        return None
-    template_key = rule.get("template_key") or rule.get("llm_instruction")
-    if not template_key:
-        return None
-    # if template_key looks like a key in TEMPLATES, return it
-    text = resolve_template(template_key)
-    return text
+    try:
+        logging.warning("compose_followup_template is deprecated and disabled; using LLM composer instead")
+    except Exception:
+        pass
+    return None
 
 
 def detect_language_simple(question: str, primary_answer: str) -> str:
