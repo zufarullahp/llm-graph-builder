@@ -35,6 +35,8 @@ from langchain_neo4j import Neo4jGraph
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from dotenv import load_dotenv
+from logging_config import init_logging
+from contextlib import asynccontextmanager
 
 # agent chat
 from src.agent.router_agent import router as agent_router
@@ -51,6 +53,17 @@ from src.api.routers.domains import router as domains_router
 from src.api.routers.internal_provision import router as internal_provision_router
 
 load_dotenv(override=True)
+init_logging()
+
+app_logger = logging.getLogger("privas.app")
+app_logger.info("Privas core startup complete")
+@asynccontextmanager
+async def lifespan(app):
+    # STARTUP
+    app_logger.info("FastAPI startup complete")
+    yield
+    # SHUTDOWN
+    app_logger.info("FastAPI shutdown triggered")
 
 logger = CustomLogger()
 CHUNK_DIR = os.path.join(os.path.dirname(__file__), "chunks")
@@ -115,7 +128,7 @@ class CustomGZipMiddleware:
             compresslevel=self.compresslevel
         )
         await gzip_middleware(scope, receive, send)
-app = FastAPI()
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(XContentTypeOptions)
 app.add_middleware(XFrame, Option={'X-Frame-Options': 'DENY'})
 app.add_middleware(CustomGZipMiddleware, minimum_size=1000, compresslevel=5,paths=["/sources_list"
