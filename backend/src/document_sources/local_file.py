@@ -12,6 +12,9 @@ class ListLoader(BaseLoader):
        self.documents = documents
    def load(self):
        return self.documents
+    
+# module-level logger
+logger = logging.getLogger("privas.document.local_file")
    
 def detect_encoding(file_path):
    """Detects the file encoding to avoid UnicodeDecodeError."""

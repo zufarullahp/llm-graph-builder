@@ -1,5 +1,8 @@
 import os
+import logging
 from google.cloud import logging as gclogger
+
+logger = logging.getLogger("privas.logger")
 
 class CustomLogger:
     def __init__(self):

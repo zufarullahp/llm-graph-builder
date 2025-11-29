@@ -2,6 +2,9 @@
 import logging
 from typing import Dict, Any, List, Optional
 
+# module-level logger
+logger = logging.getLogger("privas.proactive.admin_rules")
+
 
 # 👉 Untuk sementara: config in-memory per-tenant.
 # Nanti bisa diganti baca dari Neo4j / Postgres / config service.

@@ -8,6 +8,7 @@ from src.nid_handlers import persist_contact, get_and_clear_pending_contact
 from src.rule_instance import update_rule_instance_status
 from src.outbox import enqueue_email_job
 from src.email_composer import compose_email_content
+logger = logging.getLogger("privas.proactive.actions")
 
 
 def _is_enabled() -> bool:

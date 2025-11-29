@@ -20,6 +20,9 @@ from src.core.config import get_settings
 
 cfg = get_settings()
 
+# module-level logger
+logger = logging.getLogger("privas.db.postgres")
+
 # SQLAlchemy Engine (lazy init, pooled)
 engine = create_engine(
     cfg.DATABASE_URL,

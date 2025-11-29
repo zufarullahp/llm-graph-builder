@@ -5,6 +5,7 @@ import time
 import base64
 from dataclasses import dataclass
 from typing import Optional
+import logging
 
 import jwt  # PyJWT
 import requests
@@ -26,6 +27,9 @@ from src.shared.errors import (
 
 
 cfg = get_settings()
+
+# module-level logger
+logger = logging.getLogger("privas.api.deps")
 
 
 # ============================================================

@@ -3,6 +3,8 @@ import logging
 import json
 from typing import List, Optional
 
+logger = logging.getLogger("privas.history_graph")
+
 
 def _run_query(graph, cypher: str, params: dict, access: str = "READ"):
     """

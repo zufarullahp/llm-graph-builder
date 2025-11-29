@@ -2,6 +2,9 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 
+# module-level logger
+logger = logging.getLogger("privas.rule_instance")
+
 from src.history_graph import _run_query
 
 

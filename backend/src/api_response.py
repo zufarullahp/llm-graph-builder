@@ -1,5 +1,10 @@
 
 
+import logging
+
+logger = logging.getLogger("privas.api_response")
+
+
 def create_api_response(status,success_count=None,failed_count=None, data=None, error=None,message=None,file_source=None,file_name=None):
     """
     Create a response to be sent to the API. This is a helper function to create a JSON response that can be sent to the API.

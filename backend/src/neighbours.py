@@ -1,5 +1,6 @@
 import logging
 from src.graph_query import *
+logger = logging.getLogger("privas.neighbours")
 
 NEIGHBOURS_FROM_ELEMENT_ID_QUERY = """
 MATCH (n) 

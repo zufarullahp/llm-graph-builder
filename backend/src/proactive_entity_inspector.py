@@ -4,6 +4,8 @@ from typing import Dict, Any, List
 
 from src.history_graph import _run_query
 
+logger = logging.getLogger("privas.proactive.inspector")
+
 
 def _build_display_name(labels: List[str], props: Dict[str, Any]) -> str:
     """

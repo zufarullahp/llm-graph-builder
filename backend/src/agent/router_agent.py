@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Form, HTTPException
+import logging
 from fastapi.responses import JSONResponse
 from datetime import datetime
 import traceback
@@ -8,6 +9,7 @@ from src.agent.schema import AgentChatRequest, AgentChatResponse
 from src.agent.orchestrator import run_agent_chat
 
 router = APIRouter(prefix="/agent_chat", tags=["Agent Chat"])
+logger = logging.getLogger("privas.agent.router")
 
 
 @router.post("", response_model=AgentChatResponse)

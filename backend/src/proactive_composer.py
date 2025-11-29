@@ -5,6 +5,8 @@ import logging
 from langchain.schema import SystemMessage, HumanMessage
 
 
+logger = logging.getLogger("privas.proactive.composer")
+
 # NOTE (refactor): static templates are deprecated.
 # All runtime follow-ups should be generated via the LLM in
 # `compose_followup_message_v1()`; templates remain only as examples

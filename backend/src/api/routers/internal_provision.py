@@ -5,6 +5,7 @@ from typing import Optional, Mapping, Any
 from fastapi import APIRouter, Depends, HTTPException, Header, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+import logging
 
 from src.core.config import get_settings
 from src.db_psql.postgres import get_db
@@ -14,6 +15,8 @@ from src.services import domain_service
 
 cfg = get_settings()
 router = APIRouter()
+
+logger = logging.getLogger("privas.api.internal_provision")
 
 
 class ProvisionRequest(BaseModel):

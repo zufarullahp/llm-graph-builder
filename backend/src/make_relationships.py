@@ -9,7 +9,8 @@ import hashlib
 import time
 from langchain_neo4j import Neo4jVector
 
-logging.basicConfig(format='%(asctime)s - %(message)s',level='INFO')
+# module-level logger
+logger = logging.getLogger("privas.make_relationships")
 
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 EMBEDDING_FUNCTION , EMBEDDING_DIMENSION = load_embedding_model(EMBEDDING_MODEL)

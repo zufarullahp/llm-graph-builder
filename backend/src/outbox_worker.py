@@ -17,6 +17,7 @@ load_dotenv()
 
 SETTINGS = get_settings()
 
+logger = logging.getLogger("privas.outbox.worker")
 
 def _send_email_smtp(recipient: str, subject: str, body: str) -> None:
     host = os.getenv("SMTP_HOST")

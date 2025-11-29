@@ -5,6 +5,9 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+# module-level logger
+logger = logging.getLogger("privas.agent.classifier")
+
 from openai import OpenAI
 from src.agent.schema import IntentResult
 

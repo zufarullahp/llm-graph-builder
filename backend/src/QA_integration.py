@@ -50,6 +50,7 @@ from src.proactive_action_router import route_meta_turn
 
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 EMBEDDING_FUNCTION , _ = load_embedding_model(EMBEDDING_MODEL) 
+logger = logging.getLogger("privas.qa")
 
 class SessionChatHistory:
     history_dict = {}

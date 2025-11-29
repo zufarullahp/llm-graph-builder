@@ -7,6 +7,7 @@ from typing import Optional, Any, Dict
 from sqlalchemy import text
 
 from src.db_psql.postgres import engine
+logger = logging.getLogger("privas.outbox")
 
 
 def _now_iso() -> str:

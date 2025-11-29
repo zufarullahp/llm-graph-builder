@@ -16,6 +16,9 @@ from urllib.parse import urlparse
 import boto3
 from langchain_community.embeddings import BedrockEmbeddings
 
+# module-level logger
+logger = logging.getLogger("privas.shared.common_fn")
+
 def check_url_source(source_type, yt_url:str=None, wiki_query:str=None):
     language=''
     try:

@@ -16,7 +16,7 @@ from src.shared.crypto import encrypt
 from src.shared.errors import Neo4jUnavailable, GraphTimeout
 from src.repositories import domain_repo, domain_graph_repo
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("privas.graph_provisioner")
 cfg = get_settings()
 
 

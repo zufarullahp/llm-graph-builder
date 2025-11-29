@@ -2,6 +2,9 @@ import json
 import logging
 from typing import Dict, Any, Optional
 
+# module-level logger
+logger = logging.getLogger("privas.nid_handlers")
+
 from src.history_graph import _run_query, save_history_graph
 
 

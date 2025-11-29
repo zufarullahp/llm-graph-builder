@@ -9,6 +9,9 @@ load_dotenv()
 
 from src.history_graph import _run_query
 
+# module-level logger
+logger = logging.getLogger("privas.email_composer")
+
 # Optional OpenAI integration (best-effort)
 try:
     import openai  # type: ignore

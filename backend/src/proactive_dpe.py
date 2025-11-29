@@ -5,6 +5,8 @@ from typing import Dict, Any, List, Tuple
 
 from langchain.schema import HumanMessage, SystemMessage
 
+logger = logging.getLogger("privas.proactive.dpe")
+
 
 def extract_top_entities(retrieval_info: Dict[str, Any], top_k: int = 3) -> List[Dict[str, Any]]:
     """

@@ -36,6 +36,7 @@ from src.shared.llm_graph_builder_exception import LLMGraphBuilderException
 warnings.filterwarnings("ignore")
 load_dotenv()
 logging.basicConfig(format='%(asctime)s - %(message)s',level='INFO')
+logger = logging.getLogger("privas.main")
 
 def create_source_node_graph_url_s3(graph, model, source_url, aws_access_key_id, aws_secret_access_key, source_type):
     

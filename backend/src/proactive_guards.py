@@ -1,5 +1,6 @@
 import logging
 from src.history_graph import _run_query
+logger = logging.getLogger("privas.proactive.guards")
 
 
 def has_collected_email(graph, session_id: str) -> bool:

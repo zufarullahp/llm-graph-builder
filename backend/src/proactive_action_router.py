@@ -2,6 +2,9 @@ import logging
 import os
 from typing import Dict, Any, Optional
 
+# module-level logger
+logger = logging.getLogger("privas.proactive.action_router")
+
 from src.rule_instance import get_active_rule_instances
 from src.proactive_actions import store_email_and_notify, confirm_save_pending_contact
 

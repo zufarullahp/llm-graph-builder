@@ -1,6 +1,10 @@
 from functools import lru_cache
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
+import logging
+
+# module-level logger
+logger = logging.getLogger("privas.core.config")
 
 
 class Settings(BaseSettings):

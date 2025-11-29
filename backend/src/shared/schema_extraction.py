@@ -4,6 +4,8 @@ from src.llm import get_llm
 from langchain_core.prompts import ChatPromptTemplate
 import logging
 
+logger = logging.getLogger("privas.schema_extraction")
+
 class Schema(BaseModel):
     """Knowledge Graph Schema."""
 

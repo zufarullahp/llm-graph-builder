@@ -11,6 +11,7 @@ from src.shared.constants import GRAPH_CLEANUP_PROMPT
 from src.llm import get_llm
 from src.graphDB_dataAccess import graphDBdataAccess
 import time 
+logger = logging.getLogger("privas.post_processing")
 
 DROP_INDEX_QUERY = "DROP INDEX entities IF EXISTS;"
 LABELS_QUERY = "CALL db.labels()"

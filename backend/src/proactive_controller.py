@@ -11,6 +11,7 @@ from src.history_graph import save_history_graph, _run_query
 from src.proactive_admin_rules import load_proactive_rules_for_tenant, evaluate_admin_rules
 from src.proactive_guards import has_collected_email
 from src.rule_instance import create_rule_instance
+logger = logging.getLogger("privas.proactive.controller")
 
 
 def _collect_metric(event: str, **fields) -> None:

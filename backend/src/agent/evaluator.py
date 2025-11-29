@@ -1,8 +1,12 @@
 # src/agent/evaluator.py
+import logging
 import os
 from typing import Iterable
 
 from src.agent.schema import ChatBotResult, EvaluationResult
+
+# module-level logger
+logger = logging.getLogger("privas.agent.evaluator")
 
 
 # ====== Konfigurasi threshold via ENV (punya default aman) ======

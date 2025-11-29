@@ -7,6 +7,7 @@ import base64
 import os
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from src.core.config import get_settings
+import logging
 
 
 # ============================================================
@@ -14,7 +15,7 @@ from src.core.config import get_settings
 # ============================================================
 
 cfg = get_settings()
-
+logger = logging.getLogger("privas.crypto")
 # remove optional prefix 'base64:' and decode
 key_b64 = cfg.REGISTRY_ENC_KEY.removeprefix("base64:")
 key = base64.b64decode(key_b64)

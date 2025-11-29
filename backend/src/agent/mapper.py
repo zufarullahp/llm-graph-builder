@@ -5,6 +5,9 @@ from datetime import datetime
 from typing import List
 from src.agent.schema import IntentResult, RetrieverPlan
 
+# module-level logger
+logger = logging.getLogger("privas.agent.mapper")
+
 # =====================================
 # Mapping utama antara intent dan retriever mode
 # =====================================

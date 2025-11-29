@@ -18,7 +18,7 @@ from src.shared.errors import (
     GraphNotReady,
 )
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("privas.domain_service")
 cfg = get_settings()
 
 # Simple background executor for dev / no-redis setup

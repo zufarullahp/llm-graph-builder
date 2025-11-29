@@ -17,6 +17,7 @@ from src.shared.constants import ADDITIONAL_INSTRUCTIONS
 from src.shared.llm_graph_builder_exception import LLMGraphBuilderException
 import re
 from typing import List
+logger = logging.getLogger("privas.llm")
 
 def get_llm(model: str):
     """Retrieve the specified language model based on the model name."""

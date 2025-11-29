@@ -9,6 +9,8 @@ from datetime import timedelta
 from src.shared.constants import YOUTUBE_CHUNK_SIZE_SECONDS
 import os
 import re
+# module-level logger
+logger = logging.getLogger("privas.document.youtube")
 
 def get_youtube_transcript(youtube_id):
   try:
@@ -71,6 +73,8 @@ def get_documents_from_youtube(url):
 
 def get_calculated_timestamps(chunks, youtube_id):
   logging.info('Calculating timestamps for chunks')
+  
+
   max_start_similarity=0
   max_end_similarity=0
   transcript = get_youtube_transcript(youtube_id)

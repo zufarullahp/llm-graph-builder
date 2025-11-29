@@ -4,6 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Response, status
 from pydantic import BaseModel, Field
+import logging
 
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,8 @@ from src.services.domain_service import (
 )
 
 router = APIRouter(prefix="/domains", tags=["Domains"])
+
+logger = logging.getLogger("privas.api.domains")
 
 
 # ============================

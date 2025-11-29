@@ -3,7 +3,9 @@ from typing import Mapping, Any
 from sqlalchemy.orm import Session
 
 from src.repositories import tenant_repo
+import logging
 
+logger = logging.getLogger("privas.tenant_service")
 
 def _derive_workspace_name(email: str | None) -> str:
     if not email:

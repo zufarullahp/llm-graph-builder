@@ -3,6 +3,9 @@ from typing import Dict, Any, List, Optional
 import json
 import logging
 
+# module-level logger
+logger = logging.getLogger("privas.natural_intent")
+
 try:
     from langchain_core.messages import SystemMessage, HumanMessage
 except Exception:

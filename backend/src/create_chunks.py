@@ -7,6 +7,7 @@ import re
 import os
 
 logging.basicConfig(format="%(asctime)s - %(message)s", level="INFO")
+logger = logging.getLogger("privas.create_chunks")
 
 
 class CreateChunksofDocument:

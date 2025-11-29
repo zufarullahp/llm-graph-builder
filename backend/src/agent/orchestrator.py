@@ -16,6 +16,8 @@ from src.agent.classifier import classify_intent
 from src.agent.mapper import map_intent_to_mode
 from src.agent.evaluator import evaluate_chatbot_result
 
+logger = logging.getLogger("privas.agent.orchestrator")
+
 
 # ===== Konfigurasi dasar =====
 FASTAPI_BASE_URL = os.environ.get("FASTAPI_URL", "http://127.0.0.1:8000")

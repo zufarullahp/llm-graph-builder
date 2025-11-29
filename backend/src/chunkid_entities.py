@@ -2,6 +2,7 @@ import logging
 from src.graph_query import *
 from src.shared.constants import * 
 import re
+logger = logging.getLogger("privas.chunkid_entities")
 
 def process_records(records):
     """
